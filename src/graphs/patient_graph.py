@@ -6,28 +6,22 @@ from src.nodes.patient_node import (
     sync_initialization,
     continuous_monitoring,
     orchestrator,
-    psychiatric_expert,
     dermatology_expert,
     cardiology_expert,
     pulmonary_expert,
     gyno_urologist_expert,
-    environment_context_expert,
     occulometric_expert,
-    infectious_disease_expert,
     general_physician,
     audience_aware_compiler
 )
 
 # List of all 8 experts mirroring the visual diagram
 expert_nodes = [
-    "psychiatric_expert",
     "dermatology_expert",
     "cardiology_expert",
     "pulmonary_expert",
     "gyno_urologist_expert",
-    "environment_context_expert",
-    "occulometric_expert",
-    "infectious_disease_expert"
+    "occulometric_expert"
 ]
 
 # =============================================================================
