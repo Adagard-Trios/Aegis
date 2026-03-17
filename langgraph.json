@@ -1,0 +1,15 @@
+{
+    "dependencies": [
+        "."
+    ],
+    "graphs": {
+        "patient_graph": "src/graphs/patient_graph.py:graph",
+        "doctor_graph": "src/graphs/doctor_graph.py:graph",
+        "cardiology_expert_graph": "src/graphs/expert_subgraph.py:cardiology_expert_graph",
+        "gynecological_expert_graph": "src/graphs/expert_subgraph.py:gynecological_expert_graph",
+        "ocular_expert_graph": "src/graphs/expert_subgraph.py:ocular_expert_graph",
+        "dermatology_expert_graph": "src/graphs/expert_subgraph.py:dermatology_expert_graph",
+        "pulmonology_expert_graph": "src/graphs/expert_subgraph.py:pulmonology_expert_graph"
+    },
+    "env": ".env"
+}

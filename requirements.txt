@@ -1,0 +1,27 @@
+# ── Core LangChain / LangGraph ─────────────────────────────────────────────
+langgraph
+langgraph-cli            # required for `langgraph dev`
+langchain
+langchain-core
+langchain-groq
+langchain-huggingface
+langchain-chroma
+
+# ── Groq SDK (direct client used in chatbot.py) ────────────────────────────
+groq
+
+# ── Vector Store / Embeddings ──────────────────────────────────────────────
+chromadb
+sentence-transformers    # backend for HuggingFace all-MiniLM-L6-v2
+
+# ── Pydantic (v2) ──────────────────────────────────────────────────────────
+pydantic
+
+# ── Retry / Resilience ─────────────────────────────────────────────────────
+tenacity
+
+# ── Environment / Config ───────────────────────────────────────────────────
+python-dotenv
+sentence-transformers
+langgraph-cli[inmem]
+fastapi
