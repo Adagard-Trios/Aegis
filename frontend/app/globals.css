@@ -1,26 +1,139 @@
+@import url('https://fonts.googleapis.com/css2?family=Sora:wght@300;400;500;600;700;800&family=Inter:wght@300;400;500;600;700&display=swap');
 @import "tailwindcss";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
+/* ═══════════════════════════════════════════════════════════
+   AEGIS DESIGN SYSTEM — Tailwind v4
+   ═══════════════════════════════════════════════════════════ */
+
+@theme {
+  --color-background: hsl(222 47% 11%);
+  --color-foreground: hsl(210 40% 98%);
+
+  --color-card: hsl(222 40% 14%);
+  --color-card-foreground: hsl(210 40% 98%);
+
+  --color-popover: hsl(222 44% 12%);
+  --color-popover-foreground: hsl(210 40% 98%);
+
+  --color-primary: hsl(191 100% 50%);
+  --color-primary-foreground: hsl(222 47% 11%);
+
+  --color-secondary: hsl(222 47% 11%);
+  --color-secondary-foreground: hsl(210 40% 98%);
+
+  --color-muted: hsl(222 30% 18%);
+  --color-muted-foreground: hsl(215 16% 57%);
+
+  --color-accent: hsl(160 84% 39%);
+  --color-accent-foreground: hsl(0 0% 100%);
+
+  --color-destructive: hsl(0 84% 60%);
+  --color-destructive-foreground: hsl(210 40% 98%);
+
+  --color-border: hsl(222 25% 20%);
+  --color-input: hsl(222 25% 20%);
+  --color-ring: hsl(191 100% 50%);
+
+  --color-sidebar: hsl(222 50% 8%);
+  --color-sidebar-foreground: hsl(210 40% 98%);
+  --color-sidebar-accent: hsl(222 40% 16%);
+  --color-sidebar-border: hsl(222 30% 15%);
+
+  --color-vital-green: hsl(160 84% 39%);
+  --color-warning: hsl(38 92% 50%);
+  --color-warning-foreground: hsl(0 0% 100%);
+  --color-cyan-glow: hsl(191 100% 50%);
+
+  --font-display: 'Sora', sans-serif;
+  --font-body: 'Inter', sans-serif;
+
+  --shadow-glow: 0 0 20px hsl(191 100% 50% / 0.15);
+  --shadow-glow-strong: 0 0 30px hsl(191 100% 50% / 0.25);
+  --shadow-card: 0 1px 3px hsl(0 0% 0% / 0.2), 0 4px 16px hsl(0 0% 0% / 0.15);
+  --shadow-card-hover: 0 2px 8px hsl(0 0% 0% / 0.25), 0 8px 24px hsl(0 0% 0% / 0.2);
+
+  --radius: 0.5rem;
 }
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
+/* ═══ Base ═══ */
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+* {
+  border-color: var(--color-border);
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background-color: var(--color-background);
+  color: var(--color-foreground);
+  font-family: var(--font-body);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+h1, h2, h3, h4, h5, h6 {
+  font-family: var(--font-display);
+}
+
+/* ═══ Custom Utilities ═══ */
+
+.font-display {
+  font-family: var(--font-display);
+}
+
+.font-body {
+  font-family: var(--font-body);
+}
+
+.glow-cyan {
+  box-shadow: var(--shadow-glow);
+}
+
+.glow-cyan-strong {
+  box-shadow: var(--shadow-glow-strong);
+}
+
+.shadow-card {
+  box-shadow: var(--shadow-card);
+}
+
+.shadow-card-hover {
+  box-shadow: var(--shadow-card-hover);
+}
+
+/* ═══ Animations ═══ */
+
+@keyframes pulse-glow {
+  0%, 100% { box-shadow: 0 0 8px hsl(191 100% 50% / 0.2); }
+  50% { box-shadow: 0 0 20px hsl(191 100% 50% / 0.4); }
+}
+
+@keyframes data-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+.animate-pulse-glow {
+  animation: pulse-glow 2s ease-in-out infinite;
+}
+
+.animate-data-pulse {
+  animation: data-pulse 1.5s ease-in-out infinite;
+}
+
+/* ═══ Scrollbar ═══ */
+
+::-webkit-scrollbar {
+  width: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: hsl(222 30% 14%);
+}
+
+::-webkit-scrollbar-thumb {
+  background: hsl(215 16% 47% / 0.3);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: hsl(215 16% 47% / 0.5);
 }

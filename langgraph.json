@@ -5,11 +5,13 @@
     "graphs": {
         "patient_graph": "src/graphs/patient_graph.py:graph",
         "doctor_graph": "src/graphs/doctor_graph.py:graph",
-        "cardiology_expert_graph": "src/graphs/expert_subgraph.py:cardiology_expert_graph",
-        "gynecological_expert_graph": "src/graphs/expert_subgraph.py:gynecological_expert_graph",
-        "ocular_expert_graph": "src/graphs/expert_subgraph.py:ocular_expert_graph",
-        "dermatology_expert_graph": "src/graphs/expert_subgraph.py:dermatology_expert_graph",
-        "pulmonology_expert_graph": "src/graphs/expert_subgraph.py:pulmonology_expert_graph"
+        "cardiology_graph": "src/graphs/cardiology_graph.py:graph",
+        "pulmonary_graph": "src/graphs/pulmonary_graph.py:graph",
+        "neurology_graph": "src/graphs/neurology_graph.py:graph",
+        "dermatology_graph": "src/graphs/dermatology_graph.py:graph",
+        "gynology_graph": "src/graphs/gynology_graph.py:graph",
+        "occular_graph": "src/graphs/occular_graph.py:graph",
+        "general_physician_graph": "src/graphs/general_physician_graph.py:graph"
     },
     "env": ".env"
 }

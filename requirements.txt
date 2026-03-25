@@ -22,6 +22,5 @@ tenacity
 
 # ── Environment / Config ───────────────────────────────────────────────────
 python-dotenv
-sentence-transformers
 langgraph-cli[inmem]
 fastapi
