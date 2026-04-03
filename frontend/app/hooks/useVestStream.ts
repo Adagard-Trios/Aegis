@@ -27,6 +27,14 @@ export interface TelemetryData {
     spinal_angle: number;
     poor_posture: boolean;
     posture_label: string;
+    bmp180_pressure?: number;
+    bmp180_temp?: number;
+  };
+  environment?: {
+    bmp280_pressure: number;
+    bmp280_temp: number;
+    dht11_humidity: number;
+    dht11_temp: number;
   };
   ecg: {
     lead1: number;
@@ -48,7 +56,19 @@ export interface TelemetryData {
   };
   connection: {
     vest_connected: boolean;
+    fetal_connected: boolean;
     using_mock: boolean;
+  };
+  fetal?: {
+    mode: number;
+    piezo_raw: number[];
+    kicks: boolean[];
+    movement: boolean[];
+    mic_volts: number[];
+    heart_tones: boolean[];
+    bowel_sounds: boolean[];
+    film_pressure: number[];
+    contractions: boolean[];
   };
 }
 

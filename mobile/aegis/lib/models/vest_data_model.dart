@@ -29,6 +29,14 @@ class VestDataModel extends ChangeNotifier {
   double skinTempRight = 0.0;
   double ambientTemp = 0.0;
 
+  // Environment
+  double humidity = 0.0;
+  double pressure = 0.0;
+
+  // Obstetrics / Fetal
+  bool hasKicks = false;
+  bool hasContractions = false;
+
   // System status
   bool isConnected = false;
   String connectionStatus = 'Disconnected';
@@ -93,6 +101,26 @@ class VestDataModel extends ChangeNotifier {
     if (data.containsKey('posture') && data['posture'] != posture) {
       posture = data['posture'].toString();
       shouldNotify = true;
+    }
+
+    if (data.containsKey('environment') && data['environment'] is Map) {
+      final env = data['environment'];
+      ambientTemp = (env['bmp280_temp'] as num?)?.toDouble() ?? ambientTemp;
+      humidity = (env['dht11_humidity'] as num?)?.toDouble() ?? humidity;
+      pressure = (env['bmp280_pressure'] as num?)?.toDouble() ?? pressure;
+      shouldNotify = true;
+    }
+
+    if (data.containsKey('fetal') && data['fetal'] is Map) {
+      final fetal = data['fetal'];
+      if (fetal.containsKey('kicks')) {
+         hasKicks = (fetal['kicks'] as List).any((e) => e == true);
+         shouldNotify = true;
+      }
+      if (fetal.containsKey('contractions')) {
+         hasContractions = (fetal['contractions'] as List).any((e) => e == true);
+         shouldNotify = true;
+      }
     }
     
     // Only call notifyListeners() if low-frequency data actually changed

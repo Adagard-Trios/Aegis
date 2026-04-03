@@ -68,6 +68,8 @@ class _EnvironmentScreenState extends State<EnvironmentScreen> {
             children: [
               BiometricCard(title: 'CORE TEMP', value: model.temperature.toStringAsFixed(1), unit: '°C', statusColor: AegisTheme.statusWarning),
               BiometricCard(title: 'AMBIENT', value: model.ambientTemp.toStringAsFixed(1), unit: '°C', statusColor: AegisTheme.primary),
+              BiometricCard(title: 'HUMIDITY', value: model.humidity.toStringAsFixed(0), unit: '%', statusColor: AegisTheme.primary),
+              BiometricCard(title: 'PRESSURE', value: model.pressure.toStringAsFixed(0), unit: 'hPa', statusColor: AegisTheme.textMuted),
               BiometricCard(title: 'SKIN (LEFT)', value: model.skinTempLeft.toStringAsFixed(1), unit: '°C', statusColor: AegisTheme.statusWarning),
               BiometricCard(title: 'SKIN (RIGHT)', value: model.skinTempRight.toStringAsFixed(1), unit: '°C', statusColor: AegisTheme.statusWarning),
             ],

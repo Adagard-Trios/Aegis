@@ -1,0 +1,6 @@
+pyserial
+matplotlib
+bleak
+numpy
+scipy
+pyvista

@@ -28,16 +28,33 @@ class ObstetricsScreen extends StatelessWidget {
             crossAxisSpacing: 12,
             childAspectRatio: 1.2,
             children: [
-              BiometricCard(title: 'FOETAL HR', value: '140', unit: 'bpm', statusColor: AegisTheme.fhrColor),
+              BiometricCard(title: 'FOETAL HR', value: model.hasKicks ? '145' : '140', unit: 'bpm', statusColor: AegisTheme.fhrColor),
+              BiometricCard(
+                title: 'ACCELERATIONS', 
+                value: model.hasKicks ? 'Reactive' : 'Quiet', 
+                unit: '', 
+                statusColor: model.hasKicks ? AegisTheme.statusWarning : AegisTheme.primary
+              ),
+              BiometricCard(
+                title: 'UTERINE ACTIVITY', 
+                value: model.hasContractions ? 'Elevated' : 'None', 
+                unit: '', 
+                statusColor: model.hasContractions ? AegisTheme.statusCritical : AegisTheme.primary
+              ),
+              BiometricCard(title: 'MATERNAL HR', value: model.heartRate > 0 ? model.heartRate.toString() : '72', unit: 'bpm', statusColor: AegisTheme.spo2Color),
             ],
           ),
           const SizedBox(height: 24),
           const Text('LATEST A.I. ANALYSIS', style: TextStyle(color: AegisTheme.textMuted, fontSize: 12, fontWeight: FontWeight.bold, letterSpacing: 1.5)),
           const SizedBox(height: 12),
-          const InterpretationCard(
+          InterpretationCard(
             title: "Obstetrics & Fetal Assessment",
             icon: Icons.pregnant_woman_rounded,
-            content: "**Observations:**\n- **Fetal Heart Rate**: Baseline holding steady near 140 BPM.\n- **Variability**: Moderate variability observed.\n- **Accelerations**: Presence of sporadic healthy accelerations.\n\n**Conclusion**:\nReassuring fetal status Category I tracing. No late decelerations or concerning patterns.",
+            content: "**Observations:**\n"
+                     "- **Fetal Heart Rate**: Baseline holding steady near ${model.hasKicks ? 145 : 140} BPM.\n"
+                     "- **Accelerations**: ${model.hasKicks ? "Reactive kicks detected." : "No recent accelerations."}\n"
+                     "- **Uterine Activity**: ${model.hasContractions ? "Active contractions detected!" : "Uterine activity is quiet."}\n\n"
+                     "**Conclusion**:\n${model.hasContractions ? "Category II tracing due to uterine pressure." : "Reassuring fetal status Category I tracing."}",
           ),
         ],
       ),

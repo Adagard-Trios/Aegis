@@ -1,0 +1,1094 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>AbdomenMonitor</title>
+<link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet"/>
+<style>
+  :root {
+    --bg:         #080c10;
+    --surface:    #0e1419;
+    --surface2:   #141c24;
+    --border:     #1e2d3d;
+    --accent:     #00e5ff;
+    --accent2:    #ff4081;
+    --accent3:    #69ff47;
+    --accent4:    #ffb300;
+    --text:       #e8f4f8;
+    --muted:      #5a7a8a;
+    --fetal:      #00e5ff;
+    --abdominal:  #69ff47;
+    --danger:     #ff4081;
+    --warn:       #ffb300;
+    --font-mono:  'Space Mono', monospace;
+    --font-body:  'DM Sans', sans-serif;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font-body);
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  /* ── SCANLINES OVERLAY ── */
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background: repeating-linear-gradient(
+      0deg,
+      transparent,
+      transparent 2px,
+      rgba(0,0,0,0.03) 2px,
+      rgba(0,0,0,0.03) 4px
+    );
+    pointer-events: none;
+    z-index: 9999;
+  }
+
+  /* ── HEADER ── */
+  header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 18px 28px;
+    border-bottom: 1px solid var(--border);
+    background: var(--surface);
+    position: sticky;
+    top: 0;
+    z-index: 100;
+  }
+
+  .logo {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+
+  .logo-pulse {
+    width: 10px; height: 10px;
+    border-radius: 50%;
+    background: var(--accent);
+    box-shadow: 0 0 12px var(--accent);
+    animation: pulse 1.4s ease-in-out infinite;
+  }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.4; transform: scale(0.7); }
+  }
+
+  .logo h1 {
+    font-family: var(--font-mono);
+    font-size: 15px;
+    font-weight: 700;
+    letter-spacing: 0.15em;
+    color: var(--accent);
+    text-transform: uppercase;
+  }
+
+  .logo span {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--muted);
+    letter-spacing: 0.1em;
+  }
+
+  .header-right {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+  }
+
+  /* ── MODE TOGGLE ── */
+  .mode-toggle {
+    display: flex;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    overflow: hidden;
+  }
+
+  .mode-btn {
+    padding: 7px 16px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    border: none;
+    background: transparent;
+    color: var(--muted);
+    cursor: pointer;
+    transition: all 0.2s;
+    text-transform: uppercase;
+  }
+
+  .mode-btn.active[data-mode="fetal"] {
+    background: rgba(0, 229, 255, 0.12);
+    color: var(--fetal);
+    box-shadow: inset 0 0 12px rgba(0,229,255,0.1);
+  }
+
+  .mode-btn.active[data-mode="abdominal"] {
+    background: rgba(105, 255, 71, 0.12);
+    color: var(--abdominal);
+    box-shadow: inset 0 0 12px rgba(105,255,71,0.1);
+  }
+
+  /* ── CONNECT BUTTON ── */
+  #connectBtn {
+    padding: 8px 20px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    border: 1px solid var(--accent);
+    background: transparent;
+    color: var(--accent);
+    border-radius: 4px;
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+
+  #connectBtn:hover {
+    background: rgba(0,229,255,0.1);
+    box-shadow: 0 0 16px rgba(0,229,255,0.2);
+  }
+
+  #connectBtn.connected {
+    border-color: var(--accent3);
+    color: var(--accent3);
+  }
+
+  #connectBtn.connected:hover {
+    background: rgba(105,255,71,0.1);
+  }
+
+  /* ── STATUS BAR ── */
+  #statusBar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 28px;
+    background: var(--surface2);
+    border-bottom: 1px solid var(--border);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--muted);
+  }
+
+  #statusDot {
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    background: var(--muted);
+    transition: background 0.3s;
+  }
+
+  #statusDot.live {
+    background: var(--accent3);
+    box-shadow: 0 0 8px var(--accent3);
+    animation: pulse 1s ease-in-out infinite;
+  }
+
+  #statusDot.error { background: var(--danger); }
+
+  /* ── MAIN LAYOUT ── */
+  main {
+    display: grid;
+    grid-template-columns: 1fr 320px;
+    gap: 0;
+    height: calc(100vh - 96px);
+    overflow: hidden;
+  }
+
+  .left-panel {
+    overflow-y: auto;
+    padding: 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+  }
+
+  .right-panel {
+    border-left: 1px solid var(--border);
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* ── SECTION LABELS ── */
+  .section-label {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    letter-spacing: 0.15em;
+    color: var(--muted);
+    text-transform: uppercase;
+    margin-bottom: 10px;
+    padding-left: 2px;
+  }
+
+  /* ── SENSOR CARDS GRID ── */
+  .sensor-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 10px;
+  }
+
+  .sensor-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px;
+    position: relative;
+    overflow: hidden;
+    transition: border-color 0.2s;
+  }
+
+  .sensor-card::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 2px;
+    background: var(--accent);
+    opacity: 0.3;
+    transition: opacity 0.2s;
+  }
+
+  .sensor-card.triggered { border-color: var(--accent); }
+  .sensor-card.triggered::before { opacity: 1; box-shadow: 0 0 8px var(--accent); }
+
+  .sensor-card.triggered-green { border-color: var(--accent3); }
+  .sensor-card.triggered-green::before { background: var(--accent3); opacity: 1; }
+
+  .card-label {
+    font-family: var(--font-mono);
+    font-size: 9px;
+    letter-spacing: 0.12em;
+    color: var(--muted);
+    text-transform: uppercase;
+    margin-bottom: 8px;
+  }
+
+  .card-value {
+    font-family: var(--font-mono);
+    font-size: 22px;
+    font-weight: 700;
+    color: var(--text);
+    line-height: 1;
+    margin-bottom: 4px;
+  }
+
+  .card-unit {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--muted);
+  }
+
+  .card-badge {
+    position: absolute;
+    top: 10px; right: 10px;
+    font-family: var(--font-mono);
+    font-size: 8px;
+    letter-spacing: 0.1em;
+    padding: 2px 6px;
+    border-radius: 3px;
+    text-transform: uppercase;
+    opacity: 0;
+    transition: opacity 0.2s;
+  }
+
+  .card-badge.show { opacity: 1; }
+  .badge-kick     { background: rgba(0,229,255,0.15); color: var(--fetal); }
+  .badge-move     { background: rgba(105,255,71,0.15); color: var(--abdominal); }
+  .badge-contract { background: rgba(255,64,129,0.15); color: var(--danger); }
+  .badge-bowel    { background: rgba(255,179,0,0.15); color: var(--warn); }
+  .badge-heart    { background: rgba(255,64,129,0.2); color: var(--danger); }
+  .badge-pressure { background: rgba(105,255,71,0.15); color: var(--abdominal); }
+
+  /* ── WAVEFORM CHARTS ── */
+  .charts-section {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+  }
+
+  .chart-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px;
+  }
+
+  .chart-card canvas {
+    width: 100% !important;
+    height: 80px !important;
+    display: block;
+  }
+
+  .chart-title {
+    font-family: var(--font-mono);
+    font-size: 9px;
+    letter-spacing: 0.12em;
+    color: var(--muted);
+    text-transform: uppercase;
+    margin-bottom: 8px;
+  }
+
+  /* ── MIC & FILM CARDS ── */
+  .two-col {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+  }
+
+  /* ── PRESSURE BAR ── */
+  .pressure-bar-wrap {
+    margin-top: 8px;
+  }
+
+  .pressure-bar-bg {
+    background: var(--bg);
+    border-radius: 3px;
+    height: 6px;
+    overflow: hidden;
+    margin-top: 4px;
+  }
+
+  .pressure-bar-fill {
+    height: 100%;
+    border-radius: 3px;
+    background: var(--accent3);
+    width: 0%;
+    transition: width 0.25s ease, background 0.25s;
+    box-shadow: 0 0 6px var(--accent3);
+  }
+
+  .pressure-bar-fill.high {
+    background: var(--danger);
+    box-shadow: 0 0 6px var(--danger);
+  }
+
+  /* ── RIGHT PANEL: EVENT LOG ── */
+  .event-log-header {
+    padding: 16px 16px 10px;
+    border-bottom: 1px solid var(--border);
+    font-family: var(--font-mono);
+    font-size: 10px;
+    letter-spacing: 0.12em;
+    color: var(--muted);
+    text-transform: uppercase;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+
+  #clearLog {
+    background: none;
+    border: none;
+    color: var(--muted);
+    font-family: var(--font-mono);
+    font-size: 9px;
+    cursor: pointer;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    transition: color 0.2s;
+  }
+
+  #clearLog:hover { color: var(--danger); }
+
+  #eventList {
+    flex: 1;
+    overflow-y: auto;
+    padding: 8px 0;
+  }
+
+  .event-item {
+    display: flex;
+    gap: 10px;
+    padding: 10px 16px;
+    border-bottom: 1px solid rgba(30,45,61,0.5);
+    animation: slideIn 0.25s ease;
+    align-items: flex-start;
+  }
+
+  @keyframes slideIn {
+    from { opacity: 0; transform: translateX(10px); }
+    to   { opacity: 1; transform: translateX(0); }
+  }
+
+  .event-icon { font-size: 16px; flex-shrink: 0; margin-top: 1px; }
+
+  .event-body { flex: 1; min-width: 0; }
+
+  .event-type {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    margin-bottom: 2px;
+  }
+
+  .event-detail {
+    font-size: 11px;
+    color: var(--muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .event-time {
+    font-family: var(--font-mono);
+    font-size: 9px;
+    color: var(--muted);
+    flex-shrink: 0;
+  }
+
+  .event-FETAL_KICK   .event-type { color: var(--fetal); }
+  .event-CONTRACTION  .event-type { color: var(--danger); }
+  .event-HEART_TONE   .event-type { color: var(--danger); }
+  .event-ABD_MOVEMENT .event-type { color: var(--abdominal); }
+  .event-BOWEL_SOUND  .event-type { color: var(--warn); }
+  .event-ABD_PRESSURE .event-type { color: var(--abdominal); }
+
+  /* ── COUNTERS ── */
+  .counter-row {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 10px;
+  }
+
+  .counter-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px 14px;
+    text-align: center;
+  }
+
+  .counter-val {
+    font-family: var(--font-mono);
+    font-size: 28px;
+    font-weight: 700;
+    line-height: 1;
+    margin-bottom: 4px;
+  }
+
+  .counter-label {
+    font-family: var(--font-mono);
+    font-size: 9px;
+    letter-spacing: 0.12em;
+    color: var(--muted);
+    text-transform: uppercase;
+  }
+
+  .counter-kicks    { color: var(--fetal); }
+  .counter-contract { color: var(--danger); }
+  .counter-sounds   { color: var(--warn); }
+
+  /* ── DISCONNECTED OVERLAY ── */
+  #overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(8,12,16,0.92);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    z-index: 200;
+    backdrop-filter: blur(4px);
+  }
+
+  #overlay.hidden { display: none; }
+
+  .overlay-icon {
+    font-size: 48px;
+    margin-bottom: 20px;
+    animation: float 3s ease-in-out infinite;
+  }
+
+  @keyframes float {
+    0%, 100% { transform: translateY(0); }
+    50% { transform: translateY(-8px); }
+  }
+
+  .overlay-title {
+    font-family: var(--font-mono);
+    font-size: 18px;
+    font-weight: 700;
+    color: var(--accent);
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    margin-bottom: 10px;
+  }
+
+  .overlay-sub {
+    font-size: 14px;
+    color: var(--muted);
+    margin-bottom: 28px;
+    text-align: center;
+    max-width: 340px;
+    line-height: 1.6;
+  }
+
+  .overlay-btn {
+    padding: 12px 32px;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    border: 1px solid var(--accent);
+    background: rgba(0,229,255,0.08);
+    color: var(--accent);
+    border-radius: 4px;
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+
+  .overlay-btn:hover {
+    background: rgba(0,229,255,0.16);
+    box-shadow: 0 0 24px rgba(0,229,255,0.2);
+  }
+
+  .no-ble-warning {
+    margin-top: 16px;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--warn);
+    letter-spacing: 0.08em;
+    text-align: center;
+  }
+
+  /* scrollbar */
+  ::-webkit-scrollbar { width: 4px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+</style>
+</head>
+<body>
+
+<!-- DISCONNECT OVERLAY -->
+<div id="overlay">
+  <div class="overlay-icon">📡</div>
+  <div class="overlay-title">AbdomenMonitor</div>
+  <div class="overlay-sub">Connect to your ESP32 device via Bluetooth Low Energy to begin monitoring.</div>
+  <button class="overlay-btn" onclick="connect()">Connect Device</button>
+  <div class="no-ble-warning" id="bleWarning" style="display:none">
+    ⚠ Web Bluetooth requires Chrome or Edge browser
+  </div>
+</div>
+
+<!-- HEADER -->
+<header>
+  <div class="logo">
+    <div class="logo-pulse"></div>
+    <div>
+      <h1>AbdomenMonitor</h1>
+      <span>Advanced Sensor Platform v1.0</span>
+    </div>
+  </div>
+  <div class="header-right">
+    <div class="mode-toggle">
+      <button class="mode-btn active" data-mode="fetal" onclick="setMode(0)">Fetal</button>
+      <button class="mode-btn" data-mode="abdominal" onclick="setMode(1)">Abdominal</button>
+    </div>
+    <button id="connectBtn" onclick="connect()">Connect</button>
+  </div>
+</header>
+
+<!-- STATUS BAR -->
+<div id="statusBar">
+  <div id="statusDot"></div>
+  <span id="statusText">Not connected</span>
+  <span style="margin-left:auto;font-size:10px" id="packetCounter">0 packets</span>
+</div>
+
+<!-- MAIN -->
+<main>
+  <div class="left-panel">
+
+    <!-- COUNTERS -->
+    <div>
+      <div class="section-label">Session Counters</div>
+      <div class="counter-row">
+        <div class="counter-card">
+          <div class="counter-val counter-kicks" id="cntKicks">0</div>
+          <div class="counter-label" id="cntKicksLabel">Fetal Kicks</div>
+        </div>
+        <div class="counter-card">
+          <div class="counter-val counter-contract" id="cntContract">0</div>
+          <div class="counter-label" id="cntContractLabel">Contractions</div>
+        </div>
+        <div class="counter-card">
+          <div class="counter-val counter-sounds" id="cntSounds">0</div>
+          <div class="counter-label" id="cntSoundsLabel">Heart Tones</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- PIEZO SENSORS -->
+    <div>
+      <div class="section-label" id="piezoLabel">Piezo Sensors — Fetal Kicks</div>
+      <div class="sensor-grid">
+        <div class="sensor-card" id="pzCard0">
+          <div class="card-label">Piezo 1 · Center</div>
+          <div class="card-value" id="pzVal0">—</div>
+          <div class="card-unit">raw ADC</div>
+          <div class="card-badge badge-kick" id="pzBadge0">Kick</div>
+        </div>
+        <div class="sensor-card" id="pzCard1">
+          <div class="card-label">Piezo 2 · Bottom</div>
+          <div class="card-value" id="pzVal1">—</div>
+          <div class="card-unit">raw ADC</div>
+          <div class="card-badge badge-kick" id="pzBadge1">Kick</div>
+        </div>
+        <div class="sensor-card" id="pzCard2">
+          <div class="card-label">Piezo 3 · Right</div>
+          <div class="card-value" id="pzVal2">—</div>
+          <div class="card-unit">raw ADC</div>
+          <div class="card-badge badge-kick" id="pzBadge2">Kick</div>
+        </div>
+        <div class="sensor-card" id="pzCard3">
+          <div class="card-label">Piezo 4 · Left</div>
+          <div class="card-value" id="pzVal3">—</div>
+          <div class="card-unit">raw ADC</div>
+          <div class="card-badge badge-kick" id="pzBadge3">Kick</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- WAVEFORMS -->
+    <div>
+      <div class="section-label">Live Waveforms</div>
+      <div class="charts-section">
+        <div class="chart-card">
+          <div class="chart-title">Piezo 1 &amp; 2</div>
+          <canvas id="chartPiezo12"></canvas>
+        </div>
+        <div class="chart-card">
+          <div class="chart-title">Piezo 3 &amp; 4</div>
+          <canvas id="chartPiezo34"></canvas>
+        </div>
+        <div class="chart-card">
+          <div class="chart-title">Mic 1 &amp; 2 (V)</div>
+          <canvas id="chartMic"></canvas>
+        </div>
+        <div class="chart-card">
+          <div class="chart-title">Film Pressure (%)</div>
+          <canvas id="chartFilm"></canvas>
+        </div>
+      </div>
+    </div>
+
+    <!-- MIC SENSORS -->
+    <div>
+      <div class="section-label" id="micLabel">Microphones — Heart Tones</div>
+      <div class="two-col">
+        <div class="sensor-card" id="micCard0">
+          <div class="card-label">Mic 1 · Top-Right</div>
+          <div class="card-value" id="micVal0">—</div>
+          <div class="card-unit">volts</div>
+          <div class="card-badge badge-heart" id="micBadge0">Heart</div>
+        </div>
+        <div class="sensor-card" id="micCard1">
+          <div class="card-label">Mic 2 · Bottom-Left</div>
+          <div class="card-value" id="micVal1">—</div>
+          <div class="card-unit">volts</div>
+          <div class="card-badge badge-heart" id="micBadge1">Heart</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- FILM SENSORS -->
+    <div>
+      <div class="section-label" id="filmLabel">Film Sensors — Contractions</div>
+      <div class="two-col">
+        <div class="sensor-card" id="filmCard0">
+          <div class="card-label">Film 1 · Top</div>
+          <div class="card-value" id="filmVal0">—</div>
+          <div class="card-unit">%</div>
+          <div class="card-badge badge-contract" id="filmBadge0">Contract</div>
+          <div class="pressure-bar-wrap">
+            <div class="pressure-bar-bg">
+              <div class="pressure-bar-fill" id="filmBar0"></div>
+            </div>
+          </div>
+        </div>
+        <div class="sensor-card" id="filmCard1">
+          <div class="card-label">Film 2 · Top-Right</div>
+          <div class="card-value" id="filmVal1">—</div>
+          <div class="card-unit">%</div>
+          <div class="card-badge badge-contract" id="filmBadge1">Contract</div>
+          <div class="pressure-bar-wrap">
+            <div class="pressure-bar-bg">
+              <div class="pressure-bar-fill" id="filmBar1"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- RIGHT PANEL: EVENT LOG -->
+  <div class="right-panel">
+    <div class="event-log-header">
+      <span>Event Log</span>
+      <button id="clearLog" onclick="clearLog()">Clear</button>
+    </div>
+    <div id="eventList">
+      <div style="padding:24px 16px; text-align:center; color:var(--muted); font-size:12px; font-family:var(--font-mono);">
+        Events will appear here...
+      </div>
+    </div>
+  </div>
+</main>
+
+<script>
+// ─────────────────────────────────────────────
+// BLE CONFIGURATION
+// ─────────────────────────────────────────────
+const BLE_SERVICE   = '12345678-1234-1234-1234-123456789abc';
+const BLE_SENSOR    = '12345678-1234-1234-1234-123456789ab1';
+const BLE_EVENTS    = '12345678-1234-1234-1234-123456789ab2';
+const BLE_MODE      = '12345678-1234-1234-1234-123456789ab3';
+
+let bleDevice = null, bleServer = null;
+let charSensor = null, charEvents = null, charMode = null;
+let currentMode = 0; // 0=fetal, 1=abdominal
+let packetCount = 0;
+let connected = false;
+
+// Session counters
+let counters = { kicks: 0, contractions: 0, sounds: 0 };
+
+// ─────────────────────────────────────────────
+// CHART SETUP
+// ─────────────────────────────────────────────
+const CHART_LEN = 80;
+
+function makeBuffer(n) {
+  return Array(n).fill(0).map(() => Array(CHART_LEN).fill(0));
+}
+
+const chartData = {
+  piezo12: makeBuffer(2),
+  piezo34: makeBuffer(2),
+  mic:     makeBuffer(2),
+  film:    makeBuffer(2),
+};
+
+const canvases = {
+  piezo12: document.getElementById('chartPiezo12'),
+  piezo34: document.getElementById('chartPiezo34'),
+  mic:     document.getElementById('chartMic'),
+  film:    document.getElementById('chartFilm'),
+};
+
+const colors = ['#00e5ff', '#ff4081', '#69ff47', '#ffb300'];
+
+function drawChart(canvasId, buffers, yMin, yMax) {
+  const canvas = canvases[canvasId];
+  const ctx = canvas.getContext('2d');
+  const W = canvas.offsetWidth;
+  const H = 80;
+  canvas.width = W;
+  canvas.height = H;
+
+  ctx.clearRect(0, 0, W, H);
+
+  // Grid lines
+  ctx.strokeStyle = 'rgba(30,45,61,0.8)';
+  ctx.lineWidth = 1;
+  for (let g = 0; g <= 4; g++) {
+    const y = (g / 4) * H;
+    ctx.beginPath();
+    ctx.moveTo(0, y);
+    ctx.lineTo(W, y);
+    ctx.stroke();
+  }
+
+  // Data lines
+  buffers.forEach((buf, bi) => {
+    ctx.strokeStyle = colors[bi];
+    ctx.lineWidth = 1.5;
+    ctx.shadowColor = colors[bi];
+    ctx.shadowBlur = 4;
+    ctx.beginPath();
+    buf.forEach((v, i) => {
+      const x = (i / (CHART_LEN - 1)) * W;
+      const norm = (v - yMin) / (yMax - yMin);
+      const y = H - norm * H;
+      i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+  });
+}
+
+function pushChartData(buffers, values) {
+  values.forEach((v, i) => {
+    buffers[i].push(v);
+    if (buffers[i].length > CHART_LEN) buffers[i].shift();
+  });
+}
+
+function renderAllCharts() {
+  drawChart('piezo12', chartData.piezo12, 0, 4095);
+  drawChart('piezo34', chartData.piezo34, 0, 4095);
+  drawChart('mic',     chartData.mic,     0, 3.3);
+  drawChart('film',    chartData.film,    0, 100);
+}
+
+// ─────────────────────────────────────────────
+// BLE CONNECT
+// ─────────────────────────────────────────────
+async function connect() {
+  if (!navigator.bluetooth) {
+    document.getElementById('bleWarning').style.display = 'block';
+    return;
+  }
+
+  try {
+    setStatus('Scanning for device...', false);
+    bleDevice = await navigator.bluetooth.requestDevice({
+      filters: [{ name: 'AbdomenMonitor' }],
+      optionalServices: [BLE_SERVICE]
+    });
+
+    bleDevice.addEventListener('gattserverdisconnected', onDisconnected);
+
+    setStatus('Connecting...', false);
+    bleServer = await bleDevice.gatt.connect();
+
+    const service = await bleServer.getPrimaryService(BLE_SERVICE);
+    charSensor = await service.getCharacteristic(BLE_SENSOR);
+    charEvents = await service.getCharacteristic(BLE_EVENTS);
+    charMode   = await service.getCharacteristic(BLE_MODE);
+
+    await charSensor.startNotifications();
+    charSensor.addEventListener('characteristicvaluechanged', onSensorData);
+
+    await charEvents.startNotifications();
+    charEvents.addEventListener('characteristicvaluechanged', onEventData);
+
+    onConnected();
+  } catch (err) {
+    setStatus('Connection failed: ' + err.message, true);
+    console.error(err);
+  }
+}
+
+function onConnected() {
+  connected = true;
+  document.getElementById('overlay').classList.add('hidden');
+  document.getElementById('connectBtn').textContent = 'Disconnect';
+  document.getElementById('connectBtn').classList.add('connected');
+  setStatus('Live — ' + bleDevice.name, false, true);
+}
+
+function onDisconnected() {
+  connected = false;
+  document.getElementById('overlay').classList.remove('hidden');
+  document.getElementById('connectBtn').textContent = 'Connect';
+  document.getElementById('connectBtn').classList.remove('connected');
+  setStatus('Disconnected', true);
+}
+
+function setStatus(msg, isError = false, isLive = false) {
+  document.getElementById('statusText').textContent = msg;
+  const dot = document.getElementById('statusDot');
+  dot.className = isLive ? 'live' : (isError ? 'error' : '');
+}
+
+// ─────────────────────────────────────────────
+// SENSOR DATA HANDLER
+// ─────────────────────────────────────────────
+function onSensorData(event) {
+  const decoder = new TextDecoder('utf-8');
+  const raw = decoder.decode(event.target.value);
+  let data;
+  try { data = JSON.parse(raw); } catch { return; }
+
+  packetCount++;
+  document.getElementById('packetCounter').textContent = packetCount + ' packets';
+
+  const pz   = data.pz   || [0,0,0,0];
+  const kick = data.kick || [0,0,0,0];
+  const move = data.move || [0,0,0,0];
+  const mv   = data.mv   || [0,0];
+  const heart= data.heart|| [0,0];
+  const bowel= data.bowel|| [0,0];
+  const fp   = data.fp   || [0,0];
+  const cont = data.cont || [0,0];
+
+  // Update piezo cards
+  for (let i = 0; i < 4; i++) {
+    document.getElementById(`pzVal${i}`).textContent = pz[i];
+    const card  = document.getElementById(`pzCard${i}`);
+    const badge = document.getElementById(`pzBadge${i}`);
+    const isActive = currentMode === 0 ? kick[i] : move[i];
+    card.className  = 'sensor-card' + (isActive ? (currentMode === 0 ? ' triggered' : ' triggered-green') : '');
+    badge.className = 'card-badge ' + (currentMode === 0 ? 'badge-kick' : 'badge-move') + (isActive ? ' show' : '');
+    badge.textContent = currentMode === 0 ? 'Kick' : 'Move';
+  }
+
+  // Update mic cards
+  for (let i = 0; i < 2; i++) {
+    const v = parseFloat(mv[i]);
+    document.getElementById(`micVal${i}`).textContent = v.toFixed(3);
+    const isActive = currentMode === 0 ? heart[i] : bowel[i];
+    const card  = document.getElementById(`micCard${i}`);
+    const badge = document.getElementById(`micBadge${i}`);
+    card.className  = 'sensor-card' + (isActive ? (currentMode === 0 ? ' triggered' : ' triggered') : '');
+    badge.className = 'card-badge ' + (currentMode === 0 ? 'badge-heart' : 'badge-bowel') + (isActive ? ' show' : '');
+    badge.textContent = currentMode === 0 ? 'Heart' : 'Bowel';
+  }
+
+  // Update film cards
+  for (let i = 0; i < 2; i++) {
+    const pct = parseFloat(fp[i]);
+    document.getElementById(`filmVal${i}`).textContent = pct.toFixed(1);
+    const bar   = document.getElementById(`filmBar${i}`);
+    bar.style.width = pct + '%';
+    bar.className   = 'pressure-bar-fill' + (pct > 60 ? ' high' : '');
+    const card  = document.getElementById(`filmCard${i}`);
+    const badge = document.getElementById(`filmBadge${i}`);
+    const label = currentMode === 0 ? 'Contract' : 'Pressure';
+    card.className  = 'sensor-card' + (cont[i] ? ' triggered' : '');
+    badge.className = 'card-badge ' + (currentMode === 0 ? 'badge-contract' : 'badge-pressure') + (cont[i] ? ' show' : '');
+    badge.textContent = label;
+  }
+
+  // Push chart data
+  pushChartData(chartData.piezo12, [pz[0], pz[1]]);
+  pushChartData(chartData.piezo34, [pz[2], pz[3]]);
+  pushChartData(chartData.mic, [parseFloat(mv[0]), parseFloat(mv[1])]);
+  pushChartData(chartData.film, [parseFloat(fp[0]), parseFloat(fp[1])]);
+  renderAllCharts();
+}
+
+// ─────────────────────────────────────────────
+// EVENT DATA HANDLER
+// ─────────────────────────────────────────────
+function onEventData(event) {
+  const decoder = new TextDecoder('utf-8');
+  const raw = decoder.decode(event.target.value);
+  let data;
+  try { data = JSON.parse(raw); } catch { return; }
+
+  addEventToLog(data);
+
+  // Update counters
+  switch(data.type) {
+    case 'FETAL_KICK':    counters.kicks++;         break;
+    case 'ABD_MOVEMENT':  counters.kicks++;         break;
+    case 'CONTRACTION':   counters.contractions++;  break;
+    case 'ABD_PRESSURE':  counters.contractions++;  break;
+    case 'HEART_TONE':    counters.sounds++;        break;
+    case 'BOWEL_SOUND':   counters.sounds++;        break;
+  }
+
+  document.getElementById('cntKicks').textContent    = counters.kicks;
+  document.getElementById('cntContract').textContent = counters.contractions;
+  document.getElementById('cntSounds').textContent   = counters.sounds;
+}
+
+function addEventToLog(data) {
+  const icons = {
+    FETAL_KICK:   '👶', CONTRACTION:  '🔴', HEART_TONE:  '💓',
+    ABD_MOVEMENT: '〰️', BOWEL_SOUND:  '🔊', ABD_PRESSURE:'⬇️'
+  };
+  const labels = {
+    FETAL_KICK:   'Fetal Kick',    CONTRACTION:  'Contraction',  HEART_TONE:   'Heart Tone',
+    ABD_MOVEMENT: 'Movement',      BOWEL_SOUND:  'Bowel Sound',  ABD_PRESSURE: 'Pressure'
+  };
+
+  const list = document.getElementById('eventList');
+
+  // Remove placeholder
+  const placeholder = list.querySelector('div');
+  if (placeholder && list.children.length === 1) list.innerHTML = '';
+
+  const now = new Date();
+  const timeStr = now.toTimeString().slice(0,8);
+
+  const item = document.createElement('div');
+  item.className = `event-item event-${data.type}`;
+  item.innerHTML = `
+    <div class="event-icon">${icons[data.type] || '📡'}</div>
+    <div class="event-body">
+      <div class="event-type">${labels[data.type] || data.type}</div>
+      <div class="event-detail">${data.detail || ''}</div>
+    </div>
+    <div class="event-time">${timeStr}</div>
+  `;
+
+  list.insertBefore(item, list.firstChild);
+
+  // Keep max 100 events
+  while (list.children.length > 100) list.removeChild(list.lastChild);
+}
+
+// ─────────────────────────────────────────────
+// MODE SWITCHING
+// ─────────────────────────────────────────────
+async function setMode(mode) {
+  currentMode = mode;
+  document.querySelectorAll('.mode-btn').forEach(b => b.classList.remove('active'));
+  document.querySelectorAll('.mode-btn')[mode].classList.add('active');
+
+  // Reset counters
+  counters = { kicks: 0, contractions: 0, sounds: 0 };
+  document.getElementById('cntKicks').textContent    = 0;
+  document.getElementById('cntContract').textContent = 0;
+  document.getElementById('cntSounds').textContent   = 0;
+
+  // Update labels
+  if (mode === 0) {
+    document.getElementById('piezoLabel').textContent   = 'Piezo Sensors — Fetal Kicks';
+    document.getElementById('micLabel').textContent     = 'Microphones — Heart Tones';
+    document.getElementById('filmLabel').textContent    = 'Film Sensors — Contractions';
+    document.getElementById('cntKicksLabel').textContent    = 'Fetal Kicks';
+    document.getElementById('cntContractLabel').textContent = 'Contractions';
+    document.getElementById('cntSoundsLabel').textContent   = 'Heart Tones';
+  } else {
+    document.getElementById('piezoLabel').textContent   = 'Piezo Sensors — Abdominal Movement';
+    document.getElementById('micLabel').textContent     = 'Microphones — Bowel Sounds';
+    document.getElementById('filmLabel').textContent    = 'Film Sensors — Pressure Mapping';
+    document.getElementById('cntKicksLabel').textContent    = 'Movements';
+    document.getElementById('cntContractLabel').textContent = 'Pressure Events';
+    document.getElementById('cntSoundsLabel').textContent   = 'Bowel Sounds';
+  }
+
+  // Send mode to ESP32
+  if (charMode) {
+    try {
+      const encoder = new TextEncoder();
+      await charMode.writeValue(encoder.encode(mode.toString()));
+    } catch (e) { console.warn('Mode write failed:', e); }
+  }
+}
+
+function clearLog() {
+  document.getElementById('eventList').innerHTML =
+    '<div style="padding:24px 16px; text-align:center; color:var(--muted); font-size:12px; font-family:var(--font-mono);">Events will appear here...</div>';
+}
+
+// Chart render loop
+setInterval(renderAllCharts, 250);
+
+// Check BLE support
+if (!navigator.bluetooth) {
+  document.getElementById('bleWarning').style.display = 'block';
+}
+</script>
+</body>
+</html>

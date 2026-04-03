@@ -4,7 +4,25 @@ import DashboardLayout from "../components/DashboardLayout";
 import { motion } from "framer-motion";
 import { Thermometer, Wind, Droplets, Sun, Cloud, AlertCircle } from "lucide-react";
 
+import { useVestStream } from "../hooks/useVestStream";
+
 export default function EnvironmentPage() {
+  const { data } = useVestStream();
+
+  const ambientTemp = data?.environment?.bmp280_temp?.toFixed(1) || "24.5";
+  const humidity = data?.environment?.dht11_humidity?.toFixed(0) || "45";
+  const pressure = data?.environment?.bmp280_pressure?.toFixed(0) || "1013";
+  const dhtTemp = data?.environment?.dht11_temp?.toFixed(1) || "24.5";
+
+  // Skin temps
+  const tL = data?.temperature?.left_axilla?.toFixed(1) || "36.5";
+  const tR = data?.temperature?.right_axilla?.toFixed(1) || "36.6";
+  const tC = data?.temperature?.cervical?.toFixed(1) || "36.8";
+
+  // PPG temps
+  const ppgT1 = data?.ppg?.t1?.toFixed(1) || "30.5";
+  const ppgT2 = data?.ppg?.t2?.toFixed(1) || "31.2";
+
   return (
     <DashboardLayout>
       <div className="p-4 md:p-6 space-y-6 pt-14 md:pt-6">
@@ -20,11 +38,11 @@ export default function EnvironmentPage() {
         {/* Environmental Metrics */}
         <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3">
           {[
-            { label: "Ambient Temp", value: "24.5", unit: "°C", icon: Thermometer },
-            { label: "Humidity", value: "45", unit: "%", icon: Droplets },
+            { label: "Ambient Temp (BMP)", value: ambientTemp, unit: "°C", icon: Thermometer },
+            { label: "Humidity (DHT)", value: humidity, unit: "%", icon: Droplets },
             { label: "Air Quality", value: "Good", unit: "AQI", icon: Wind },
-            { label: "UV Index", value: "2", unit: "Low", icon: Sun },
-            { label: "Pressure", value: "1013", unit: "hPa", icon: Cloud },
+            { label: "DHT11 Temp", value: dhtTemp, unit: "°C", icon: Sun },
+            { label: "Pressure", value: pressure, unit: "hPa", icon: Cloud },
             { label: "CO₂ Level", value: "420", unit: "ppm", icon: AlertCircle },
           ].map((m, i) => (
             <motion.div
@@ -61,9 +79,9 @@ export default function EnvironmentPage() {
           </div>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             {[
-              { zone: "Left Axilla", temp: "36.5", status: "Normal" },
-              { zone: "Right Axilla", temp: "36.6", status: "Normal" },
-              { zone: "Cervical (C7)", temp: "36.8", status: "Normal" },
+              { zone: "Left Axilla", temp: tL, status: "Normal" },
+              { zone: "Right Axilla", temp: tR, status: "Normal" },
+              { zone: "Cervical (C7)", temp: tC, status: "Normal" },
             ].map((z) => (
               <div key={z.zone} className="bg-muted/50 rounded-lg p-4 text-center">
                 <p className="text-xs text-muted-foreground uppercase tracking-wider mb-2">
@@ -97,12 +115,12 @@ export default function EnvironmentPage() {
           <div className="grid grid-cols-2 gap-4">
             <div className="bg-muted/50 rounded-lg p-4 text-center">
               <p className="text-xs text-muted-foreground mb-1">Sensor 1</p>
-              <span className="font-display text-2xl font-bold text-foreground">30.5</span>
+              <span className="font-display text-2xl font-bold text-foreground">{ppgT1}</span>
               <span className="text-sm text-muted-foreground ml-1">°C</span>
             </div>
             <div className="bg-muted/50 rounded-lg p-4 text-center">
               <p className="text-xs text-muted-foreground mb-1">Sensor 2</p>
-              <span className="font-display text-2xl font-bold text-foreground">31.2</span>
+              <span className="font-display text-2xl font-bold text-foreground">{ppgT2}</span>
               <span className="text-sm text-muted-foreground ml-1">°C</span>
             </div>
           </div>

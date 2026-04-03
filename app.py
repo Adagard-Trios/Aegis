@@ -23,8 +23,10 @@ from src.utils.db import init_db, insert_telemetry, get_latest_telemetry, get_la
 # =============================================================
 # CONFIGURATION
 # =============================================================
-DEVICE_NAME = "Aegis_SpO2_Live"
-CHAR_UUID = "beb5483e-36e1-4688-b7f5-ea07361b26a8"
+VEST_DEVICE_NAME = "Aegis_SpO2_Live"
+FETAL_DEVICE_NAME = "AbdomenMonitor"
+VEST_CHAR_UUID = "beb5483e-36e1-4688-b7f5-ea07361b26a8"
+FETAL_CHAR_UUID = "12345678-1234-1234-1234-123456789ab1"
 SAMPLE_RATE = 40
 BUFFER_SIZE = 800
 SPO2_WINDOW = 160
@@ -61,6 +63,14 @@ lp_data = deque([0.0] * BUFFER_SIZE, maxlen=BUFFER_SIZE)
 lr_data = deque([0.0] * BUFFER_SIZE, maxlen=BUFFER_SIZE)
 sa_data = deque([0.0] * BUFFER_SIZE, maxlen=BUFFER_SIZE)
 pp_data = deque([0] * BUFFER_SIZE, maxlen=BUFFER_SIZE)
+bpr_data = deque([0.0] * BUFFER_SIZE, maxlen=BUFFER_SIZE)  # GY-87 BMP180 Pressure
+btp_data = deque([0.0] * BUFFER_SIZE, maxlen=BUFFER_SIZE)  # GY-87 BMP180 Temp
+
+# Environment
+env_ep_data = deque([0.0] * BUFFER_SIZE, maxlen=BUFFER_SIZE)  # HW-611 BMP280 Pressure
+env_et_data = deque([0.0] * BUFFER_SIZE, maxlen=BUFFER_SIZE)  # HW-611 BMP280 Temp
+env_hum_data = deque([0.0] * BUFFER_SIZE, maxlen=BUFFER_SIZE) # DHT11 Humidity
+env_dt_data = deque([0.0] * BUFFER_SIZE, maxlen=BUFFER_SIZE)  # DHT11 Temp
 
 # ECG
 ecg_l1_data = deque([0.0] * BUFFER_SIZE, maxlen=BUFFER_SIZE)
@@ -78,6 +88,18 @@ spo2_data = deque([0.0] * BUFFER_SIZE, maxlen=BUFFER_SIZE)
 br_data = deque([0.0] * BUFFER_SIZE, maxlen=BUFFER_SIZE)
 hrv_data = deque([0.0] * BUFFER_SIZE, maxlen=BUFFER_SIZE)
 pi_data = deque([0.0] * BUFFER_SIZE, maxlen=BUFFER_SIZE)
+
+# Fetal
+f_connected = False
+f_mode = 0
+f_pz_data = deque([[]] * BUFFER_SIZE, maxlen=BUFFER_SIZE)
+f_kick_data = deque([[]] * BUFFER_SIZE, maxlen=BUFFER_SIZE)
+f_move_data = deque([[]] * BUFFER_SIZE, maxlen=BUFFER_SIZE)
+f_mv_data = deque([[]] * BUFFER_SIZE, maxlen=BUFFER_SIZE)
+f_heart_data = deque([[]] * BUFFER_SIZE, maxlen=BUFFER_SIZE)
+f_bowel_data = deque([[]] * BUFFER_SIZE, maxlen=BUFFER_SIZE)
+f_fp_data = deque([[]] * BUFFER_SIZE, maxlen=BUFFER_SIZE)
+f_cont_data = deque([[]] * BUFFER_SIZE, maxlen=BUFFER_SIZE)
 
 time_counter = 0
 vest_connected = False
@@ -202,6 +224,27 @@ def posture_label(sa):
 # BLE HANDLER
 # =============================================================
 
+def handle_fetal_notification(sender, data):
+    global f_connected, f_mode
+    try:
+        f_connected = True
+        decoded = data.decode('utf-8').strip()
+        parsed = json.loads(decoded)
+        
+        with data_lock:
+            f_mode = parsed.get("mode", 0)
+            f_pz_data.append(parsed.get("pz", [0,0,0,0]))
+            f_kick_data.append(parsed.get("kick", [0,0,0,0]))
+            f_move_data.append(parsed.get("move", [0,0,0,0]))
+            f_mv_data.append(parsed.get("mv", [0.0,0.0]))
+            f_heart_data.append(parsed.get("heart", [0,0]))
+            f_bowel_data.append(parsed.get("bowel", [0,0]))
+            f_fp_data.append(parsed.get("fp", [0.0,0.0]))
+            f_cont_data.append(parsed.get("cont", [0,0]))
+            
+    except Exception as e:
+        print(f"Fetal Parse error: {e}")
+
 def handle_ble_notification(sender, data):
     global time_counter
     try:
@@ -229,6 +272,12 @@ def handle_ble_notification(sender, data):
         lr_val = float(parts.get('LR', 0))
         sa = float(parts.get('SA', 0))
         pp = int(parts.get('PP', 0))
+        bpr = float(parts.get('BPR', 0))
+        btp = float(parts.get('BTP', 0))
+        ep = float(parts.get('EP', 0))
+        et = float(parts.get('ET', 0))
+        hum = float(parts.get('HUM', 0))
+        dt = float(parts.get('DT', 0))
         ecg_l1 = float(parts.get('L1', 0))
         ecg_l2 = float(parts.get('L2', 0))
         ecg_l3 = float(parts.get('L3', 0))
@@ -256,6 +305,12 @@ def handle_ble_notification(sender, data):
             lr_data.append(lr_val)
             sa_data.append(sa)
             pp_data.append(pp)
+            bpr_data.append(bpr)
+            btp_data.append(btp)
+            env_ep_data.append(ep)
+            env_et_data.append(et)
+            env_hum_data.append(hum)
+            env_dt_data.append(dt)
             ecg_l1_data.append(ecg_l1)
             ecg_l2_data.append(ecg_l2)
             ecg_l3_data.append(ecg_l3)
@@ -279,40 +334,66 @@ def handle_ble_notification(sender, data):
         print(f"Parse error: {e}")
 
 
-async def run_ble_client():
-    global vest_connected
+async def run_single_client(device_name: str, char_uuid: str, handler_func, set_connected_flag_func):
     try:
         from bleak import BleakClient, BleakScanner
+    except ImportError:
+        return False
+        
+    print(f"Scanning for '{device_name}'...")
+    device = await BleakScanner.find_device_by_name(device_name, timeout=10.0)
+    if not device:
+        print(f"[WARN] Device '{device_name}' not found.")
+        return False
+
+    print(f"Found {device_name} at {device.address}. Connecting...")
+    try:
+        async with BleakClient(device) as client:
+            if client.is_connected:
+                set_connected_flag_func(True)
+                print(f"[{device_name}] Connected! Streaming...")
+                await client.start_notify(char_uuid, handler_func)
+                while client.is_connected:
+                    await asyncio.sleep(1)
+    except Exception as e:
+        print(f"BLE error on {device_name}: {e}")
+    finally:
+        set_connected_flag_func(False)
+    return False
+
+async def run_dual_clients():
+    def set_vest_connected(val):
+        global vest_connected
+        vest_connected = val
+        
+    def set_fetal_connected(val):
+        global f_connected
+        f_connected = val
+
+    try:
+        from bleak import BleakScanner
     except ImportError:
         print("[WARN] bleak not installed — using mock data")
         return False
 
-    print(f"Scanning for '{DEVICE_NAME}'...")
-    device = await BleakScanner.find_device_by_name(DEVICE_NAME, timeout=10.0)
-    if not device:
-        print(f"[WARN] Device '{DEVICE_NAME}' not found — using mock data")
+    task1 = run_single_client(VEST_DEVICE_NAME, VEST_CHAR_UUID, handle_ble_notification, set_vest_connected)
+    task2 = run_single_client(FETAL_DEVICE_NAME, FETAL_CHAR_UUID, handle_fetal_notification, set_fetal_connected)
+    
+    results = await asyncio.gather(task1, task2, return_exceptions=True)
+    # If both return False/Exception (i.e., not found), we fallback to mock
+    if all(res is False or isinstance(res, Exception) for res in results):
         return False
-
-    print(f"Found at {device.address}. Connecting...")
-    try:
-        async with BleakClient(device) as client:
-            if client.is_connected:
-                vest_connected = True
-                print("Connected! Streaming full telemetry...")
-                await client.start_notify(CHAR_UUID, handle_ble_notification)
-                while True:
-                    await asyncio.sleep(1)
-    except Exception as e:
-        print(f"BLE error: {e}")
-        vest_connected = False
-        return False
-
+    return True
 
 def ble_thread_runner():
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
-    result = loop.run_until_complete(run_ble_client())
-    if result is False:
+    try:
+        result = loop.run_until_complete(run_dual_clients())
+        if result is False:
+            start_mock_data()
+    except Exception as e:
+        print("Asyncio loop error:", e)
         start_mock_data()
 
 
@@ -375,19 +456,41 @@ def _mock_data_loop():
         temp_r = 36.6 + 0.2 * math.sin(t * 0.012)
         temp_c = 36.8 + 0.1 * math.sin(t * 0.008)
 
-        # Simulated IMU
+        # Simulated IMU & Environment
         up_val = 2.0 + 1.5 * math.sin(t * 0.1)
         ur_val = 0.5 + 0.8 * math.sin(t * 0.08)
         lp_val = 1.0 + 1.0 * math.sin(t * 0.12)
         lr_val = 0.3 + 0.5 * math.sin(t * 0.09)
         sa_val = up_val - lp_val
         pp_val = 1 if abs(sa_val) > 15 else 0
+        bpr_val = 1012.0 + 0.5 * math.sin(t * 0.01)
+        btp_val = 28.5 + 0.1 * math.sin(t * 0.02)
+        ep_val = 1013.25 + 0.5 * math.sin(t * 0.015)
+        et_val = 25.0 + 0.2 * math.sin(t * 0.01)
+        hum_val = 55.0 + 5.0 * math.sin(t * 0.025)
+        dt_val = 24.8 + 0.1 * math.sin(t * 0.012)
 
         # Audio
         audio_a_val = 120 + 30 * math.sin(t * 5)
         audio_d_val = 80 + 20 * math.sin(t * 7)
 
+        # Fetal Simulated
+        f_pz_val = [2000 + 100 * math.sin(t * 0.5)] * 4
+        f_kick_val = [1 if (math.sin(t * 1.5) > 0.95) else 0] * 4
+        f_move_val = [1 if (math.sin(t * 0.8) > 0.9) else 0] * 4
+        
+        # simulated maternal bowel/heart tones
+        f_mv_val = [1.5 + 0.1 * math.sin(t * 5), 1.5 + 0.1 * math.cos(t * 6)]
+        f_heart_val = [1 if (t % 0.4 < 0.1) else 0] * 2
+        f_bowel_val = [1 if (math.sin(t * 0.2) > 0.8) else 0] * 2
+        
+        # simulated contraction pressure
+        base_pressure = 10 + 50 * max(0, math.sin(t * 0.1))
+        f_fp_val = [base_pressure, base_pressure * 0.9]
+        f_cont_val = [1 if base_pressure > 40 else 0] * 2
+
         with data_lock:
+            # Vest
             time_counter += 1
             x_data.append(time_counter)
             ir1_data.append(ir1)
@@ -407,12 +510,30 @@ def _mock_data_loop():
             lr_data.append(lr_val)
             sa_data.append(sa_val)
             pp_data.append(pp_val)
+            bpr_data.append(bpr_val)
+            btp_data.append(btp_val)
+            env_ep_data.append(ep_val)
+            env_et_data.append(et_val)
+            env_hum_data.append(hum_val)
+            env_dt_data.append(dt_val)
             ecg_l1_data.append(ecg_l1)
             ecg_l2_data.append(ecg_l2)
             ecg_l3_data.append(ecg_l3)
             ecg_hr_data.append(72.0)
             audio_a_data.append(audio_a_val)
             audio_d_data.append(audio_d_val)
+            
+            # Fetal
+            global f_mode
+            f_mode = 0 # Fetal
+            f_pz_data.append(f_pz_val)
+            f_kick_data.append(f_kick_val)
+            f_move_data.append(f_move_val)
+            f_mv_data.append(f_mv_val)
+            f_heart_data.append(f_heart_val)
+            f_bowel_data.append(f_bowel_val)
+            f_fp_data.append(f_fp_val)
+            f_cont_data.append(f_cont_val)
 
             spo2 = calculate_spo2(list(ira_data), list(reda_data)) if len(ira_data) >= SPO2_WINDOW else 0.0
             bpm, _ = calculate_heart_rate(list(ira_data)) if len(ira_data) >= SAMPLE_RATE * 4 else (0.0, [])
@@ -463,6 +584,14 @@ def build_telemetry_snapshot() -> dict:
                 "spinal_angle": round(last_sa, 2),
                 "poor_posture": bool(pp_data[-1]) if pp_data else False,
                 "posture_label": posture_label(last_sa),
+                "bmp180_pressure": round(bpr_data[-1], 2) if bpr_data else 0,
+                "bmp180_temp": round(btp_data[-1], 2) if btp_data else 0,
+            },
+            "environment": {
+                "bmp280_pressure": round(env_ep_data[-1], 2) if env_ep_data else 0,
+                "bmp280_temp": round(env_et_data[-1], 2) if env_et_data else 0,
+                "dht11_humidity": round(env_hum_data[-1], 2) if env_hum_data else 0,
+                "dht11_temp": round(env_dt_data[-1], 2) if env_dt_data else 0,
             },
             "ecg": {
                 "lead1": round(ecg_l1_data[-1], 3) if ecg_l1_data else 0,
@@ -484,8 +613,20 @@ def build_telemetry_snapshot() -> dict:
             },
             "connection": {
                 "vest_connected": vest_connected,
+                "fetal_connected": f_connected,
                 "using_mock": using_mock,
             },
+            "fetal": {
+                "mode": f_mode,
+                "piezo_raw": f_pz_data[-1] if f_pz_data else [0,0,0,0],
+                "kicks": [bool(k) for k in f_kick_data[-1]] if f_kick_data else [False]*4,
+                "movement": [bool(m) for m in f_move_data[-1]] if f_move_data else [False]*4,
+                "mic_volts": f_mv_data[-1] if f_mv_data else [0.0, 0.0],
+                "heart_tones": [bool(h) for h in f_heart_data[-1]] if f_heart_data else [False]*2,
+                "bowel_sounds": [bool(b) for b in f_bowel_data[-1]] if f_bowel_data else [False]*2,
+                "film_pressure": f_fp_data[-1] if f_fp_data else [0.0, 0.0],
+                "contractions": [bool(c) for c in f_cont_data[-1]] if f_cont_data else [False]*2,
+            }
         }
 
 
@@ -520,8 +661,10 @@ async def get_status():
     """Return current vest connection status."""
     return {
         "vest_connected": vest_connected,
+        "fetal_connected": f_connected,
         "using_mock": using_mock,
-        "device_name": DEVICE_NAME,
+        "vest_device": VEST_DEVICE_NAME,
+        "fetal_device": FETAL_DEVICE_NAME,
         "sample_rate": SAMPLE_RATE,
         "buffer_size": BUFFER_SIZE,
         "packets_received": time_counter,
