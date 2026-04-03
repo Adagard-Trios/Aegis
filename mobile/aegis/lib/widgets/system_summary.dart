@@ -23,14 +23,14 @@ class SystemSummary extends StatelessWidget {
                   child: Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      Icon(Icons.shield_rounded, color: AegisTheme.primary),
+                      Icon(Icons.shield_rounded, color: MedVerseTheme.primary),
                       SizedBox(width: 8),
                       Flexible(
                         child: FittedBox(
                           fit: BoxFit.scaleDown,
                           child: Text(
-                            'Aegis System',
-                            style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: AegisTheme.textMain),
+                            'MedVerse System',
+                            style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: MedVerseTheme.textMain),
                           ),
                         ),
                       ),
@@ -45,13 +45,13 @@ class SystemSummary extends StatelessWidget {
                       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
                       decoration: BoxDecoration(
                         color: model.isConnected
-                            ? AegisTheme.statusNormal.withOpacity(0.2)
-                            : AegisTheme.statusWarning.withOpacity(0.2),
+                            ? MedVerseTheme.statusNormal.withOpacity(0.2)
+                            : MedVerseTheme.statusWarning.withOpacity(0.2),
                         borderRadius: BorderRadius.circular(12),
                         border: Border.all(
                           color: model.isConnected
-                              ? AegisTheme.statusNormal
-                              : AegisTheme.statusWarning,
+                              ? MedVerseTheme.statusNormal
+                              : MedVerseTheme.statusWarning,
                         ),
                       ),
                       child: Row(
@@ -61,7 +61,7 @@ class SystemSummary extends StatelessWidget {
                             width: 8,
                             height: 8,
                             decoration: BoxDecoration(
-                              color: model.isConnected ? AegisTheme.statusNormal : AegisTheme.statusWarning,
+                              color: model.isConnected ? MedVerseTheme.statusNormal : MedVerseTheme.statusWarning,
                               shape: BoxShape.circle,
                             ),
                           ),
@@ -70,7 +70,7 @@ class SystemSummary extends StatelessWidget {
                             model.connectionStatus,
                             style: TextStyle(
                               fontSize: 12,
-                              color: model.isConnected ? AegisTheme.statusNormal : AegisTheme.statusWarning,
+                              color: model.isConnected ? MedVerseTheme.statusNormal : MedVerseTheme.statusWarning,
                               fontWeight: FontWeight.w600,
                             ),
                           ),
@@ -86,7 +86,7 @@ class SystemSummary extends StatelessWidget {
               "General Physician Assessment",
               style: TextStyle(
                 fontSize: 12,
-                color: AegisTheme.textMuted,
+                color: MedVerseTheme.textMuted,
                 letterSpacing: 1.1,
                 fontWeight: FontWeight.w600,
               ),
@@ -98,7 +98,7 @@ class SystemSummary extends StatelessWidget {
                   : "No data stream connected. Connect vest to begin health assessment.",
               style: const TextStyle(
                 fontSize: 14,
-                color: AegisTheme.textMain,
+                color: MedVerseTheme.textMain,
                 height: 1.5,
               ),
             ),

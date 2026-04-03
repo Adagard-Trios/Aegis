@@ -24,3 +24,8 @@ tenacity
 python-dotenv
 langgraph-cli[inmem]
 fastapi
+uvicorn
+numpy
+scipy
+bleak
+python-multipart

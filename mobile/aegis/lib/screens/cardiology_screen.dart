@@ -18,9 +18,9 @@ class CardiologyScreen extends StatelessWidget {
       padding: const EdgeInsets.all(16.0),
       child: Column(
         children: [
-          LiveWaveform(title: 'LEAD II ECG (100Hz)', dataSource: model.ecgData, color: AegisTheme.ecgColor, height: 180),
+          LiveWaveform(title: 'LEAD II ECG (100Hz)', dataSource: model.ecgData, color: MedVerseTheme.ecgColor, height: 180),
           const SizedBox(height: 16),
-          LiveWaveform(title: 'PHOTOPLETHYSMOGRAPHY (PPG)', dataSource: model.ppgData, color: AegisTheme.ppgColor, height: 120, minY: 0, maxY: 1.0),
+          LiveWaveform(title: 'PHOTOPLETHYSMOGRAPHY (PPG)', dataSource: model.ppgData, color: MedVerseTheme.ppgColor, height: 120, minY: 0, maxY: 1.0),
           const SizedBox(height: 16),
           GridView.count(
             crossAxisCount: 2,
@@ -30,12 +30,12 @@ class CardiologyScreen extends StatelessWidget {
             crossAxisSpacing: 12,
             childAspectRatio: 1.2,
             children: [
-              BiometricCard(title: 'BLOOD PRESSURE', value: '\${model.systolicBp.toInt()}/\${model.diastolicBp.toInt()}', unit: 'mmHg', statusColor: AegisTheme.statusNormal),
-              BiometricCard(title: 'HRV (RMSSD)', value: model.hrvRmssd.toStringAsFixed(1), unit: 'ms', statusColor: AegisTheme.primary),
+              BiometricCard(title: 'BLOOD PRESSURE', value: '\${model.systolicBp.toInt()}/\${model.diastolicBp.toInt()}', unit: 'mmHg', statusColor: MedVerseTheme.statusNormal),
+              BiometricCard(title: 'HRV (RMSSD)', value: model.hrvRmssd.toStringAsFixed(1), unit: 'ms', statusColor: MedVerseTheme.primary),
             ],
           ),
           const SizedBox(height: 24),
-          const Text('LATEST A.I. ANALYSIS', style: TextStyle(color: AegisTheme.textMuted, fontSize: 12, fontWeight: FontWeight.bold, letterSpacing: 1.5)),
+          const Text('LATEST A.I. ANALYSIS', style: TextStyle(color: MedVerseTheme.textMuted, fontSize: 12, fontWeight: FontWeight.bold, letterSpacing: 1.5)),
           const SizedBox(height: 12),
           const InterpretationCard(
             title: "Cardiology Expert Assessment",

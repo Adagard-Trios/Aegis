@@ -67,30 +67,30 @@ class _GeneralPhysicianScreenState extends State<GeneralPhysicianScreen> {
 
           const Text(
             'LATEST TRIAGE REPORT',
-            style: TextStyle(color: AegisTheme.textMuted, fontSize: 12, fontWeight: FontWeight.bold, letterSpacing: 1.5),
+            style: TextStyle(color: MedVerseTheme.textMuted, fontSize: 12, fontWeight: FontWeight.bold, letterSpacing: 1.5),
           ),
           const SizedBox(height: 12),
           Container(
             padding: const EdgeInsets.all(16.0),
             decoration: BoxDecoration(
-              color: AegisTheme.surfaceHighlight.withOpacity(0.5),
+              color: MedVerseTheme.surfaceHighlight.withOpacity(0.5),
               borderRadius: BorderRadius.circular(16),
-              border: Border.all(color: AegisTheme.primary.withOpacity(0.3)),
+              border: Border.all(color: MedVerseTheme.primary.withOpacity(0.3)),
             ),
             child: const Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Row(
                   children: [
-                    Icon(Icons.check_circle_rounded, color: AegisTheme.primary, size: 20),
+                    Icon(Icons.check_circle_rounded, color: MedVerseTheme.primary, size: 20),
                     SizedBox(width: 8),
-                    Text('Stable Status', style: TextStyle(color: AegisTheme.primary, fontWeight: FontWeight.bold, fontSize: 16)),
+                    Text('Stable Status', style: TextStyle(color: MedVerseTheme.primary, fontWeight: FontWeight.bold, fontSize: 16)),
                   ],
                 ),
                 SizedBox(height: 12),
                 Text(
                   "The patient's continuous 10Hz telemetry indicates nominal cardiovascular baseline operation. The Respiratory rhythms exhibit steady pneumography, and SpO2 is holding identically at nominal levels.\n\nNo immediate physical interventions or specialized triages are required at this very second.",
-                  style: TextStyle(color: AegisTheme.textMain, height: 1.5),
+                  style: TextStyle(color: MedVerseTheme.textMain, height: 1.5),
                 ),
               ],
             ),
@@ -104,18 +104,18 @@ class _GeneralPhysicianScreenState extends State<GeneralPhysicianScreen> {
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        color: AegisTheme.surfaceHighlight.withOpacity(0.3),
+        color: MedVerseTheme.surfaceHighlight.withOpacity(0.3),
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: AegisTheme.primary.withOpacity(0.2)),
+        border: Border.all(color: MedVerseTheme.primary.withOpacity(0.2)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           const Row(
             children: [
-              Icon(Icons.camera_alt_rounded, color: AegisTheme.primary, size: 20),
+              Icon(Icons.camera_alt_rounded, color: MedVerseTheme.primary, size: 20),
               SizedBox(width: 8),
-              Text('Capture Evidence', style: TextStyle(color: AegisTheme.textMain, fontWeight: FontWeight.bold, fontSize: 16)),
+              Text('Capture Evidence', style: TextStyle(color: MedVerseTheme.textMain, fontWeight: FontWeight.bold, fontSize: 16)),
             ],
           ),
           const SizedBox(height: 16),
@@ -125,7 +125,7 @@ class _GeneralPhysicianScreenState extends State<GeneralPhysicianScreen> {
               icon: const Icon(Icons.add_a_photo_rounded),
               label: const Text('Capture Frontal Symptom'),
               style: ElevatedButton.styleFrom(
-                backgroundColor: AegisTheme.primary,
+                backgroundColor: MedVerseTheme.primary,
                 foregroundColor: Colors.white,
                 padding: const EdgeInsets.symmetric(vertical: 16),
               ),
@@ -151,8 +151,8 @@ class _GeneralPhysicianScreenState extends State<GeneralPhysicianScreen> {
                         icon: const Icon(Icons.refresh_rounded),
                         label: const Text('Retake'),
                         style: OutlinedButton.styleFrom(
-                          foregroundColor: AegisTheme.textMuted,
-                          side: const BorderSide(color: AegisTheme.textMuted),
+                          foregroundColor: MedVerseTheme.textMuted,
+                          side: const BorderSide(color: MedVerseTheme.textMuted),
                         ),
                       ),
                     ),

@@ -18,7 +18,7 @@ class BiometricCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Card(
-      color: AegisTheme.surfaceHighlight.withOpacity(0.5),
+      color: MedVerseTheme.surfaceHighlight.withOpacity(0.5),
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 10.0, vertical: 8.0),
         child: Column(
@@ -40,7 +40,7 @@ class BiometricCard extends StatelessWidget {
                     child: Text(
                       title,
                       style: const TextStyle(
-                        color: AegisTheme.textMuted,
+                        color: MedVerseTheme.textMuted,
                         fontSize: 12,
                         fontWeight: FontWeight.w600,
                         letterSpacing: 0.5,
@@ -62,7 +62,7 @@ class BiometricCard extends StatelessWidget {
                       Text(
                         value,
                         style: const TextStyle(
-                          color: AegisTheme.textMain,
+                          color: MedVerseTheme.textMain,
                           fontSize: 28,
                           fontWeight: FontWeight.bold,
                         ),

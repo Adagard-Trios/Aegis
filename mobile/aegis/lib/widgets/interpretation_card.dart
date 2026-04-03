@@ -19,21 +19,21 @@ class InterpretationCard extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.all(16.0),
       decoration: BoxDecoration(
-        color: AegisTheme.surfaceHighlight.withOpacity(0.5),
+        color: MedVerseTheme.surfaceHighlight.withOpacity(0.5),
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: AegisTheme.primary.withOpacity(0.3)),
+        border: Border.all(color: MedVerseTheme.primary.withOpacity(0.3)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
             children: [
-              Icon(icon, color: AegisTheme.primary, size: 20),
+              Icon(icon, color: MedVerseTheme.primary, size: 20),
               const SizedBox(width: 8),
               Expanded(
                 child: Text(
                   title,
-                  style: const TextStyle(color: AegisTheme.primary, fontWeight: FontWeight.bold, fontSize: 16),
+                  style: const TextStyle(color: MedVerseTheme.primary, fontWeight: FontWeight.bold, fontSize: 16),
                   overflow: TextOverflow.ellipsis,
                 ),
               ),
@@ -43,9 +43,9 @@ class InterpretationCard extends StatelessWidget {
           MarkdownBody(
             data: content,
             styleSheet: MarkdownStyleSheet(
-              p: const TextStyle(color: AegisTheme.textMain, height: 1.5, fontSize: 14),
-              strong: const TextStyle(color: AegisTheme.accent, fontWeight: FontWeight.bold),
-              listBullet: const TextStyle(color: AegisTheme.primary),
+              p: const TextStyle(color: MedVerseTheme.textMain, height: 1.5, fontSize: 14),
+              strong: const TextStyle(color: MedVerseTheme.accent, fontWeight: FontWeight.bold),
+              listBullet: const TextStyle(color: MedVerseTheme.primary),
             ),
           ),
         ],

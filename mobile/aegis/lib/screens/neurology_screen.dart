@@ -25,13 +25,13 @@ class NeurologyScreen extends StatelessWidget {
             crossAxisSpacing: 12,
             childAspectRatio: 1.2,
             children: [
-              BiometricCard(title: 'POSTURE', value: model.posture, unit: '', statusColor: AegisTheme.primary),
-              BiometricCard(title: 'MOTION STATE', value: model.motionState, unit: '', statusColor: AegisTheme.primary),
-              BiometricCard(title: 'FALL RISK', value: model.fallRiskScore.toStringAsFixed(1), unit: '/10', statusColor: model.fallRiskScore > 5 ? AegisTheme.statusWarning : AegisTheme.statusNormal),
+              BiometricCard(title: 'POSTURE', value: model.posture, unit: '', statusColor: MedVerseTheme.primary),
+              BiometricCard(title: 'MOTION STATE', value: model.motionState, unit: '', statusColor: MedVerseTheme.primary),
+              BiometricCard(title: 'FALL RISK', value: model.fallRiskScore.toStringAsFixed(1), unit: '/10', statusColor: model.fallRiskScore > 5 ? MedVerseTheme.statusWarning : MedVerseTheme.statusNormal),
             ],
           ),
           const SizedBox(height: 24),
-          const Text('LATEST A.I. ANALYSIS', style: TextStyle(color: AegisTheme.textMuted, fontSize: 12, fontWeight: FontWeight.bold, letterSpacing: 1.5)),
+          const Text('LATEST A.I. ANALYSIS', style: TextStyle(color: MedVerseTheme.textMuted, fontSize: 12, fontWeight: FontWeight.bold, letterSpacing: 1.5)),
           const SizedBox(height: 12),
           const InterpretationCard(
             title: "Neurological & Balance Assessment",

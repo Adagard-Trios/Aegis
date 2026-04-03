@@ -40,6 +40,11 @@ class VestDataModel extends ChangeNotifier {
   // System status
   bool isConnected = false;
   String connectionStatus = 'Disconnected';
+  
+  // Pharmacology
+  String? activeMedication;
+  double medSimTime = 0.0;
+  String clearanceModel = "Normal";
 
   void updateConnectionStatus(bool connected, String status) {
     if (isConnected != connected || connectionStatus != status) {
@@ -74,32 +79,40 @@ class VestDataModel extends ChangeNotifier {
       rspData.value = updatedRsp;
     }
 
-    // Biometrics parsing updates the standard state
-    if (data.containsKey('heart_rate') && data['heart_rate'] != heartRate) {
-      heartRate = (data['heart_rate'] as num).toInt();
+    // Detailed Biometrics parsing updates the standard state
+    if (data.containsKey('vitals') && data['vitals'] is Map) {
+      final vitals = data['vitals'];
+      heartRate = (vitals['heart_rate'] as num?)?.toInt() ?? heartRate;
+      spO2 = (vitals['spo2'] as num?)?.toInt() ?? spO2;
+      respiratoryRate = (vitals['breathing_rate'] as num?)?.toInt() ?? respiratoryRate;
+      hrvRmssd = (vitals['hrv_rmssd'] as num?)?.toDouble() ?? hrvRmssd;
+      perfusionIndex = (vitals['perfusion_index'] as num?)?.toDouble() ?? perfusionIndex;
       shouldNotify = true;
     }
-    if (data.containsKey('spo2') && data['spo2'] != spO2) {
-      spO2 = (data['spo2'] as num).toInt();
+    
+    // Fallback if structured differently by mock stream vs real stream
+    if (data.containsKey('heart_rate') && data['heart_rate'] != heartRate) {
+      heartRate = (data['heart_rate'] as num).toInt();
       shouldNotify = true;
     }
     if (data.containsKey('temperature') && data['temperature'] != temperature) {
       temperature = (data['temperature'] as num).toDouble();
       shouldNotify = true;
     }
-    if (data.containsKey('respiratory_rate') && data['respiratory_rate'] != respiratoryRate) {
-      respiratoryRate = (data['respiratory_rate'] as num).toInt();
+
+    if (data.containsKey('temperature') && data['temperature'] is Map) {
+      final temps = data['temperature'];
+      skinTempLeft = (temps['left_axilla'] as num?)?.toDouble() ?? skinTempLeft;
+      skinTempRight = (temps['right_axilla'] as num?)?.toDouble() ?? skinTempRight;
+      temperature = (temps['cervical'] as num?)?.toDouble() ?? temperature;
       shouldNotify = true;
     }
 
     // Expert specific updates
-    if (data.containsKey('blood_pressure') && data['blood_pressure'] is Map) {
-      systolicBp = (data['blood_pressure']['systolic'] as num?)?.toDouble() ?? systolicBp;
-      diastolicBp = (data['blood_pressure']['diastolic'] as num?)?.toDouble() ?? diastolicBp;
-      shouldNotify = true;
-    }
-    if (data.containsKey('posture') && data['posture'] != posture) {
-      posture = data['posture'].toString();
+    if (data.containsKey('imu') && data['imu'] is Map) {
+      final imu = data['imu'];
+      posture = imu['posture_label']?.toString() ?? posture;
+      fallRiskScore = (imu['spinal_angle'] as num?)?.toDouble() ?? fallRiskScore;
       shouldNotify = true;
     }
 
@@ -121,6 +134,14 @@ class VestDataModel extends ChangeNotifier {
          hasContractions = (fetal['contractions'] as List).any((e) => e == true);
          shouldNotify = true;
       }
+    }
+    
+    if (data.containsKey('pharmacology') && data['pharmacology'] is Map) {
+      final pharm = data['pharmacology'];
+      activeMedication = pharm['active_medication']?.toString();
+      medSimTime = (pharm['sim_time'] as num?)?.toDouble() ?? medSimTime;
+      clearanceModel = pharm['clearance_model']?.toString() ?? clearanceModel;
+      shouldNotify = true;
     }
     
     // Only call notifyListeners() if low-frequency data actually changed

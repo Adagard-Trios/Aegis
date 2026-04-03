@@ -6,9 +6,9 @@ import { SystemSummary } from "./components/SystemSummary";
 import { BiometricGrid } from "./components/BiometricGrid";
 import { LiveWaveforms } from "./components/LiveWaveforms";
 import { ExpertSummaryCards } from "./components/ExpertSummaryCards";
-import { VestModel3D } from "./components/VestModel3D";
+import { MedVerseDigitalTwin } from "./components/MedVerseDigitalTwin";
+import { SimulationControls } from "./components/SimulationControls";
 import { useVestStream } from "./hooks/useVestStream";
-import { motion } from "framer-motion";
 import { Radio, Shield, Stethoscope } from "lucide-react";
 
 export default function HomePage() {
@@ -16,56 +16,64 @@ export default function HomePage() {
 
   return (
     <DashboardLayout>
-      <div className="p-4 md:p-6 space-y-6 pt-14 md:pt-6">
+      <div className="p-4 md:p-6 space-y-6 pt-14 md:pt-6 flex flex-col h-[calc(100vh-2rem)] overflow-hidden">
         <DashboardHeader />
 
-        {/* Hero Section */}
-        <div className="grid grid-cols-1 xl:grid-cols-5 gap-4">
-          <div className="xl:col-span-2 space-y-4">
-            <SystemSummary />
-            <VestStatusCard />
+        {/* Content Area - 2 Column Layout on Large Screens */}
+        <div className="flex-1 w-full flex flex-col xl:flex-row gap-6 overflow-hidden">
+          
+          {/* Left Column - Digital Twin */}
+          <div className="w-full xl:w-2/5 flex flex-col h-full min-h-[500px] xl:min-h-0 bg-black/5 rounded-2xl border border-border/50 overflow-hidden relative">
+            <MedVerseDigitalTwin />
           </div>
-          <motion.div
-            initial={{ opacity: 0, scale: 0.95 }}
-            animate={{ opacity: 1, scale: 1 }}
-            transition={{ duration: 0.5, ease: "easeOut" }}
-            className="xl:col-span-3 relative rounded-lg overflow-hidden bg-card border border-border shadow-card min-h-[420px]"
-          >
-            <VestModel3D />
-          </motion.div>
-        </div>
+          
+          {/* Right Column - Analytics and Controls */}
+          <div className="w-full xl:w-3/5 flex flex-col h-full overflow-y-auto pr-2 space-y-6 scrollbar-hide">
+            
+            {/* Top Summaries */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <SystemSummary />
+              <VestStatusCard />
+            </div>
+            
+            {/* Simulation Interface */}
+            <SimulationControls />
+            
+            {/* Extended Biometrics */}
+            <div>
+              <div className="flex items-center gap-2 mb-4">
+                <Shield className="w-4 h-4 text-primary" />
+                <h2 className="font-display text-lg font-semibold text-foreground tracking-tight">
+                  Live Comprehensive Biometrics
+                </h2>
+              </div>
+              <BiometricGrid data={data} />
+            </div>
 
-        {/* Expert Summaries */}
-        <div>
-          <div className="flex items-center gap-2 mb-4">
-            <Stethoscope className="w-4 h-4 text-primary" />
-            <h2 className="font-display text-lg font-semibold text-foreground tracking-tight">
-              Expert Agent Summaries
-            </h2>
-          </div>
-          <ExpertSummaryCards />
-        </div>
+            {/* Live Waveforms */}
+            <div>
+              <div className="flex items-center gap-2 mb-4">
+                <Radio className="w-4 h-4 text-primary animate-data-pulse" />
+                <h2 className="font-display text-lg font-semibold text-foreground tracking-tight">
+                  Telemetry Waveforms
+                </h2>
+              </div>
+              <LiveWaveforms />
+            </div>
 
-        {/* Live Waveforms */}
-        <div>
-          <div className="flex items-center gap-2 mb-4">
-            <Radio className="w-4 h-4 text-primary animate-data-pulse" />
-            <h2 className="font-display text-lg font-semibold text-foreground tracking-tight">
-              Live Waveforms
-            </h2>
-          </div>
-          <LiveWaveforms />
-        </div>
+            {/* Expert Summaries */}
+            <div className="pb-8">
+              <div className="flex items-center gap-2 mb-4">
+                <Stethoscope className="w-4 h-4 text-primary" />
+                <h2 className="font-display text-lg font-semibold text-foreground tracking-tight">
+                  Expert Agent Anomalies
+                </h2>
+              </div>
+              <ExpertSummaryCards />
+            </div>
 
-        {/* Biometric Summary Cards */}
-        <div>
-          <div className="flex items-center gap-2 mb-4">
-            <Shield className="w-4 h-4 text-primary" />
-            <h2 className="font-display text-lg font-semibold text-foreground tracking-tight">
-              Biometric Summary
-            </h2>
           </div>
-          <BiometricGrid data={data} />
+
         </div>
       </div>
     </DashboardLayout>

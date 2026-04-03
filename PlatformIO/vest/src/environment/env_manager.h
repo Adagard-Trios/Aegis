@@ -31,6 +31,7 @@ private:
   TwoWire *_bus = nullptr;
   bool _bmpOk  = false;
   bool _dhtOk  = false;
+  uint8_t _bmpAddr = 0x76;
 
   // ── BMP280 calibration coefficients ────────────────────────
   uint16_t _dig_T1;

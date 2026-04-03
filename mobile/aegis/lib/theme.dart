@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 
-class AegisTheme {
+class MedVerseTheme {
   // Brand colors matching the Next.js Tailwind configuration
   static const Color background = Color(0xFF020617); // slate-950
   static const Color surface = Color(0xFF0F172A); // slate-900

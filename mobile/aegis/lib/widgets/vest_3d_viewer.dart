@@ -36,7 +36,7 @@ class _Vest3DViewerState extends State<Vest3DViewer> {
         height: 300,
         decoration: BoxDecoration(
           borderRadius: BorderRadius.circular(16),
-          color: AegisTheme.surface,
+          color: MedVerseTheme.surface,
         ),
         child: Stack(
           children: [
@@ -48,7 +48,7 @@ class _Vest3DViewerState extends State<Vest3DViewer> {
               top: 16, left: 16,
               child: Text(
                 'LIVE VEST MODEL',
-                style: TextStyle(color: AegisTheme.primary, fontWeight: FontWeight.bold, letterSpacing: 1.5, fontSize: 10),
+                style: TextStyle(color: MedVerseTheme.primary, fontWeight: FontWeight.bold, letterSpacing: 1.5, fontSize: 10),
               ),
             ),
           ],

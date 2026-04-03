@@ -66,12 +66,12 @@ class _EnvironmentScreenState extends State<EnvironmentScreen> {
             crossAxisSpacing: 12,
             childAspectRatio: 1.0,
             children: [
-              BiometricCard(title: 'CORE TEMP', value: model.temperature.toStringAsFixed(1), unit: '°C', statusColor: AegisTheme.statusWarning),
-              BiometricCard(title: 'AMBIENT', value: model.ambientTemp.toStringAsFixed(1), unit: '°C', statusColor: AegisTheme.primary),
-              BiometricCard(title: 'HUMIDITY', value: model.humidity.toStringAsFixed(0), unit: '%', statusColor: AegisTheme.primary),
-              BiometricCard(title: 'PRESSURE', value: model.pressure.toStringAsFixed(0), unit: 'hPa', statusColor: AegisTheme.textMuted),
-              BiometricCard(title: 'SKIN (LEFT)', value: model.skinTempLeft.toStringAsFixed(1), unit: '°C', statusColor: AegisTheme.statusWarning),
-              BiometricCard(title: 'SKIN (RIGHT)', value: model.skinTempRight.toStringAsFixed(1), unit: '°C', statusColor: AegisTheme.statusWarning),
+              BiometricCard(title: 'CORE TEMP', value: model.temperature.toStringAsFixed(1), unit: '°C', statusColor: MedVerseTheme.statusWarning),
+              BiometricCard(title: 'AMBIENT', value: model.ambientTemp.toStringAsFixed(1), unit: '°C', statusColor: MedVerseTheme.primary),
+              BiometricCard(title: 'HUMIDITY', value: model.humidity.toStringAsFixed(0), unit: '%', statusColor: MedVerseTheme.primary),
+              BiometricCard(title: 'PRESSURE', value: model.pressure.toStringAsFixed(0), unit: 'hPa', statusColor: MedVerseTheme.textMuted),
+              BiometricCard(title: 'SKIN (LEFT)', value: model.skinTempLeft.toStringAsFixed(1), unit: '°C', statusColor: MedVerseTheme.statusWarning),
+              BiometricCard(title: 'SKIN (RIGHT)', value: model.skinTempRight.toStringAsFixed(1), unit: '°C', statusColor: MedVerseTheme.statusWarning),
             ],
           ),
           const SizedBox(height: 24),
@@ -80,7 +80,7 @@ class _EnvironmentScreenState extends State<EnvironmentScreen> {
           _buildCameraSection(),
           const SizedBox(height: 24),
 
-          const Text('LATEST A.I. ANALYSIS', style: TextStyle(color: AegisTheme.textMuted, fontSize: 12, fontWeight: FontWeight.bold, letterSpacing: 1.5)),
+          const Text('LATEST A.I. ANALYSIS', style: TextStyle(color: MedVerseTheme.textMuted, fontSize: 12, fontWeight: FontWeight.bold, letterSpacing: 1.5)),
           const SizedBox(height: 12),
           const InterpretationCard(
             title: "Dermatology & Environment",
@@ -96,18 +96,18 @@ class _EnvironmentScreenState extends State<EnvironmentScreen> {
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        color: AegisTheme.surfaceHighlight.withOpacity(0.3),
+        color: MedVerseTheme.surfaceHighlight.withOpacity(0.3),
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: AegisTheme.primary.withOpacity(0.2)),
+        border: Border.all(color: MedVerseTheme.primary.withOpacity(0.2)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           const Row(
             children: [
-              Icon(Icons.camera_alt_rounded, color: AegisTheme.primary, size: 20),
+              Icon(Icons.camera_alt_rounded, color: MedVerseTheme.primary, size: 20),
               SizedBox(width: 8),
-              Text('Skin Symptom Capture', style: TextStyle(color: AegisTheme.textMain, fontWeight: FontWeight.bold, fontSize: 16)),
+              Text('Skin Symptom Capture', style: TextStyle(color: MedVerseTheme.textMain, fontWeight: FontWeight.bold, fontSize: 16)),
             ],
           ),
           const SizedBox(height: 16),
@@ -117,7 +117,7 @@ class _EnvironmentScreenState extends State<EnvironmentScreen> {
               icon: const Icon(Icons.add_a_photo_rounded),
               label: const Text('Capture Skin Symptom'),
               style: ElevatedButton.styleFrom(
-                backgroundColor: AegisTheme.primary,
+                backgroundColor: MedVerseTheme.primary,
                 foregroundColor: Colors.white,
                 padding: const EdgeInsets.symmetric(vertical: 16),
               ),
@@ -143,8 +143,8 @@ class _EnvironmentScreenState extends State<EnvironmentScreen> {
                         icon: const Icon(Icons.refresh_rounded),
                         label: const Text('Retake'),
                         style: OutlinedButton.styleFrom(
-                          foregroundColor: AegisTheme.textMuted,
-                          side: const BorderSide(color: AegisTheme.textMuted),
+                          foregroundColor: MedVerseTheme.textMuted,
+                          side: const BorderSide(color: MedVerseTheme.textMuted),
                         ),
                       ),
                     ),

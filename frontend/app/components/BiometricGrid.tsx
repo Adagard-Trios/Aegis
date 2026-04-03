@@ -195,6 +195,38 @@ export function BiometricGrid({ data }: { data: TelemetryData | null }) {
           icon: TrendingUp,
           sparkline: genSparkline(data.vitals.hrv_rmssd || 42, 10),
         },
+        {
+          title: "Fetal Kicks",
+          value: data.fetal?.kicks.some(k => k) ? "Active" : "None",
+          unit: "",
+          status: data.fetal?.kicks.some(k => k) ? ("normal" as const) : ("warning" as const),
+          icon: Activity,
+          sparkline: genSparkline(data.fetal?.kicks.some(k => k) ? 1 : 0, 1),
+        },
+        {
+          title: "Uterine Contractions",
+          value: data.fetal?.contractions.some(c => c) ? "True" : "False",
+          unit: "",
+          status: data.fetal?.contractions.some(c => c) ? ("critical" as const) : ("normal" as const),
+          icon: Activity,
+          sparkline: genSparkline(data.fetal?.contractions.some(c => c) ? 1 : 0, 1),
+        },
+        {
+          title: "Spinal Angle (Posture)",
+          value: data.imu.spinal_angle !== undefined ? data.imu.spinal_angle.toFixed(1) : "0.0",
+          unit: "°",
+          status: data.imu.poor_posture ? ("critical" as const) : ("normal" as const),
+          icon: Activity,
+          sparkline: genSparkline(data.imu.spinal_angle || 0, 5),
+        },
+        {
+          title: "Environmental Temp",
+          value: data.environment?.bmp280_temp ? data.environment.bmp280_temp.toFixed(1) : "22.5",
+          unit: "°C",
+          status: "normal" as const,
+          icon: Thermometer,
+          sparkline: genSparkline(data.environment?.bmp280_temp || 22.5, 0.5),
+        },
       ];
     }
     return [
@@ -204,13 +236,17 @@ export function BiometricGrid({ data }: { data: TelemetryData | null }) {
       { title: "Respiratory Rate", value: "16", unit: "br/min", status: "normal" as const, icon: Wind, sparkline: genSparkline(16, 3) },
       { title: "Core Temperature", value: "36.8", unit: "°C", status: "normal" as const, icon: Thermometer, sparkline: genSparkline(36.8, 0.3) },
       { title: "HRV (RMSSD)", value: "42", unit: "ms", status: "normal" as const, icon: TrendingUp, sparkline: genSparkline(42, 10) },
+      { title: "Fetal Kicks", value: "None", unit: "", status: "normal" as const, icon: Activity, sparkline: genSparkline(0, 1) },
+      { title: "Uterine Contractions", value: "False", unit: "", status: "normal" as const, icon: Activity, sparkline: genSparkline(0, 1) },
+      { title: "Spinal Angle (Posture)", value: "0.0", unit: "°", status: "normal" as const, icon: Activity, sparkline: genSparkline(0, 5) },
+      { title: "Environmental Temp", value: "22.5", unit: "°C", status: "normal" as const, icon: Thermometer, sparkline: genSparkline(22.5, 0.5) },
     ];
   }, [data]);
 
   return (
     <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
       {cards.map((card, i) => (
-        <BiometricCard key={card.title} {...card} delay={i * 0.07} />
+        <BiometricCard key={card.title} {...card} delay={i * 0.05} />
       ))}
     </div>
   );

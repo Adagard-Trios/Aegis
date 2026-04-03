@@ -5,6 +5,7 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
+    "bleak>=3.0.1",
     "chromadb>=1.5.5",
     "fastapi>=0.135.1",
     "groq>=0.37.1",
@@ -15,8 +16,12 @@ dependencies = [
     "langchain-huggingface>=1.2.1",
     "langgraph>=1.1.2",
     "langgraph-cli[inmem]>=0.4.18",
+    "numpy>=2.4.3",
     "pydantic>=2.12.5",
     "python-dotenv>=1.2.2",
+    "python-multipart>=0.0.22",
+    "scipy>=1.17.1",
     "sentence-transformers>=5.3.0",
     "tenacity>=9.1.4",
+    "uvicorn>=0.42.0",
 ]

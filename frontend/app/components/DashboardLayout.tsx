@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { AegisSidebar } from "./AegisSidebar";
+import { MedVerseSidebar } from "./MedVerseSidebar";
 import { ExpertChatPanel } from "./ExpertChatPanel";
 import { Menu } from "lucide-react";
 
@@ -37,7 +37,7 @@ export default function DashboardLayout({
           mobileNavOpen ? "translate-x-0" : "-translate-x-full"
         }`}
       >
-        <AegisSidebar
+        <MedVerseSidebar
           collapsed={false}
           onToggle={() => setMobileNavOpen(false)}
           onNavigate={() => setMobileNavOpen(false)}
@@ -46,7 +46,7 @@ export default function DashboardLayout({
 
       {/* Desktop sidebar */}
       <div className="hidden md:block">
-        <AegisSidebar
+        <MedVerseSidebar
           collapsed={sidebarCollapsed}
           onToggle={() => setSidebarCollapsed(!sidebarCollapsed)}
         />

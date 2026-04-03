@@ -31,7 +31,7 @@ class LiveWaveform extends StatelessWidget {
             Text(
               title,
               style: TextStyle(
-                color: AegisTheme.textMuted,
+                color: MedVerseTheme.textMuted,
                 fontSize: 12,
                 fontWeight: FontWeight.w600,
                 letterSpacing: 1.2,
@@ -48,7 +48,7 @@ class LiveWaveform extends StatelessWidget {
                       return Center(
                         child: Text(
                           'Waiting for data...',
-                          style: TextStyle(color: AegisTheme.textMuted.withOpacity(0.5)),
+                          style: TextStyle(color: MedVerseTheme.textMuted.withOpacity(0.5)),
                         ),
                       );
                     }

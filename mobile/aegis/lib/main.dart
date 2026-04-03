@@ -29,9 +29,9 @@ class AegisApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Aegis IoT Clinical Dashboard',
+      title: 'MedVerse IoT Clinical Dashboard',
       debugShowCheckedModeBanner: false,
-      theme: AegisTheme.darkTheme,
+      theme: MedVerseTheme.darkTheme,
       home: const MainLayout(),
     );
   }

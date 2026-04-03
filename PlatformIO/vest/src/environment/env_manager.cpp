@@ -5,17 +5,17 @@
 // ══════════════════════════════════════════════════════════════
 
 bool EnvManager::_bmpWriteReg(uint8_t reg, uint8_t val) {
-  _bus->beginTransmission(BMP280_ADDR);
+  _bus->beginTransmission(_bmpAddr);
   _bus->write(reg);
   _bus->write(val);
   return (_bus->endTransmission() == 0);
 }
 
 bool EnvManager::_bmpReadRegs(uint8_t reg, uint8_t *buf, uint8_t len) {
-  _bus->beginTransmission(BMP280_ADDR);
+  _bus->beginTransmission(_bmpAddr);
   _bus->write(reg);
   if (_bus->endTransmission() != 0) return false;
-  _bus->requestFrom((uint8_t)BMP280_ADDR, len);
+  _bus->requestFrom((uint8_t)_bmpAddr, len);
   for (uint8_t i = 0; i < len; i++) {
     if (!_bus->available()) return false;
     buf[i] = _bus->read();
@@ -28,14 +28,22 @@ bool EnvManager::_bmpReadRegs(uint8_t reg, uint8_t *buf, uint8_t len) {
 // ══════════════════════════════════════════════════════════════
 
 bool EnvManager::_initBMP280() {
-  // Check chip ID — 0x58 = BMP280, 0x60 = BME280 (HW-611 sometimes ships with either)
+  uint8_t addresses[2] = {0x76, 0x77};
   uint8_t chipId = 0;
-  if (!_bmpReadRegs(BMP280_CHIP_ID_REG, &chipId, 1)) {
-    Serial.println("[ENV] BMP280 — no response on Bus 1.");
-    return false;
+  bool found = false;
+
+  for (int i = 0; i < 2; i++) {
+    _bmpAddr = addresses[i];
+    if (_bmpReadRegs(BMP280_CHIP_ID_REG, &chipId, 1)) {
+      if (chipId == 0x58 || chipId == 0x60) {
+        found = true;
+        break;
+      }
+    }
   }
-  if (chipId != 0x58 && chipId != 0x60) {
-    Serial.printf("[ENV] BMP280 unexpected chip ID: 0x%02X (expected 0x58 or 0x60).\n", chipId);
+
+  if (!found) {
+    Serial.println("[ENV] BMP280 — no response on Bus 1 (tried 0x76 and 0x77).");
     return false;
   }
 
@@ -72,7 +80,7 @@ bool EnvManager::_initBMP280() {
   _bmpWriteReg(BMP280_CONFIG_REG, 0x88);
   _bmpWriteReg(BMP280_CTRL_MEAS, 0x2F);
 
-  Serial.printf("[ENV] BMP280 OK on Bus 1 (chip 0x%02X, addr 0x%02X).\n", chipId, BMP280_ADDR);
+  Serial.printf("[ENV] BMP280 OK on Bus 1 (chip 0x%02X, addr 0x%02X).\n", chipId, _bmpAddr);
   return true;
 }
 

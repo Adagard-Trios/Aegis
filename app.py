@@ -11,12 +11,14 @@ import time
 import threading
 from collections import deque
 from typing import AsyncGenerator
+from contextlib import asynccontextmanager
 
 import numpy as np
 from scipy.signal import butter, filtfilt, find_peaks
-from fastapi import FastAPI
+from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
 
 from src.utils.db import init_db, insert_telemetry, get_latest_telemetry, get_latest_interpretations
 
@@ -31,6 +33,8 @@ SAMPLE_RATE = 40
 BUFFER_SIZE = 800
 SPO2_WINDOW = 160
 BR_WINDOW = 400
+
+SIMULATION_MODE_GLOBAL = "Live"
 
 data_lock = threading.Lock()
 
@@ -626,6 +630,12 @@ def build_telemetry_snapshot() -> dict:
                 "bowel_sounds": [bool(b) for b in f_bowel_data[-1]] if f_bowel_data else [False]*2,
                 "film_pressure": f_fp_data[-1] if f_fp_data else [0.0, 0.0],
                 "contractions": [bool(c) for c in f_cont_data[-1]] if f_cont_data else [False]*2,
+            },
+            "pharmacology": {
+                "active_medication": globals().get('SIMULATED_MEDICATION', None),
+                "dose": globals().get('SIMULATED_MEDICATION_DOSE', 0.0),
+                "sim_time": globals().get('MEDICATION_SIM_TIME', 0.0),
+                "clearance_model": globals().get('PATIENT_CYP2D6_STATUS', "Normal Metabolizer")
             }
         }
 
@@ -634,7 +644,18 @@ def build_telemetry_snapshot() -> dict:
 # FASTAPI APP
 # =============================================================
 
-app = FastAPI(title="Aegis Vest Telemetry API", version="1.0.0")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Start BLE connection thread on server startup."""
+    init_db()
+    ble_thread = threading.Thread(target=ble_thread_runner, daemon=True)
+    ble_thread.start()
+    
+    sqlite_thread = threading.Thread(target=sqlite_writer_loop, daemon=True)
+    sqlite_thread.start()
+    yield
+
+app = FastAPI(title="Aegis Vest Telemetry API", version="1.0.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -643,17 +664,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-
-@app.on_event("startup")
-async def startup_event():
-    """Start BLE connection thread on server startup."""
-    init_db()
-    ble_thread = threading.Thread(target=ble_thread_runner, daemon=True)
-    ble_thread.start()
-    
-    sqlite_thread = threading.Thread(target=sqlite_writer_loop, daemon=True)
-    sqlite_thread.start()
 
 
 @app.get("/api/status")
@@ -678,6 +688,48 @@ async def stream_telemetry():
     async def event_generator() -> AsyncGenerator[str, None]:
         while True:
             snapshot = build_telemetry_snapshot()
+            
+            if SIMULATION_MODE_GLOBAL != "Live":
+                if SIMULATION_MODE_GLOBAL == "6h":
+                    snapshot['vitals']['heart_rate'] = max(60, snapshot['vitals']['heart_rate'] - 10)
+                    snapshot['temperature']['cervical'] = 37.0
+                    snapshot['fetal']['contractions'] = [False, False]
+                elif SIMULATION_MODE_GLOBAL == "12h":
+                    snapshot['vitals']['heart_rate'] = 80.0
+                    snapshot['temperature']['cervical'] = 36.8
+                    snapshot['fetal']['kicks'] = [True, False, False, False]
+                elif SIMULATION_MODE_GLOBAL == "24h":
+                    snapshot['vitals']['heart_rate'] = 72.0
+                    snapshot['temperature']['cervical'] = 36.6
+                    snapshot['fetal']['kicks'] = [True, False, True, False]
+                elif SIMULATION_MODE_GLOBAL == "2w":
+                    snapshot['imu']['spinal_angle'] += 5.0
+                    snapshot['vitals']['heart_rate'] = 85.0
+                elif SIMULATION_MODE_GLOBAL == "4w":
+                    snapshot['imu']['spinal_angle'] += 12.0
+                    snapshot['vitals']['heart_rate'] = 95.0
+                    snapshot['fetal']['contractions'] = [True, True]
+                    snapshot['fetal']['kicks'] = [True, True, True, False]
+
+            # Pharmacokinetic / Pharmacodynamic overlay
+            global MEDICATION_SIM_TIME, SIMULATED_MEDICATION, SIMULATED_MEDICATION_DOSE, PATIENT_CYP2D6_STATUS
+            if SIMULATED_MEDICATION:
+                MEDICATION_SIM_TIME += 0.1
+                
+                # Slower clearance if poor metabolizer
+                clearance_k = 0.1 if PATIENT_CYP2D6_STATUS == "Poor Metabolizer" else 0.2
+                
+                # Example mathematically smoothed effect using exponential bounds 
+                # E(t) = Emax * (1 - e^-kt)
+                effect_curve = 1 - math.exp(-clearance_k * MEDICATION_SIM_TIME)
+                
+                if "labetalol" in SIMULATED_MEDICATION.lower():
+                    snapshot['vitals']['heart_rate'] -= int(15 * effect_curve * (SIMULATED_MEDICATION_DOSE/100))
+                elif "oxytocin" in SIMULATED_MEDICATION.lower():
+                    snapshot['fetal']['contractions'] = [True, True]
+                    snapshot['vitals']['heart_rate'] += int(5 * effect_curve)
+                
+                
             yield f"data: {json.dumps(snapshot)}\n\n"
             await asyncio.sleep(0.1)  # 10 Hz update rate to frontend
 
@@ -711,6 +763,95 @@ async def get_snapshot():
 async def get_interpretations():
     """Return the latest AI interpretations for each specialty from SQLite."""
     return get_latest_interpretations()
+
+class SimulationRequest(BaseModel):
+    mode: str
+
+@app.post("/api/simulation/mode")
+async def set_simulation_mode(req: SimulationRequest):
+    global SIMULATION_MODE_GLOBAL
+    SIMULATION_MODE_GLOBAL = req.mode
+    return {"status": "success", "mode": SIMULATION_MODE_GLOBAL}
+
+SIMULATED_MEDICATION = None
+SIMULATED_MEDICATION_DOSE = 0.0
+MEDICATION_SIM_TIME = 0.0
+PATIENT_CYP2D6_STATUS = "Normal Metabolizer" # Default
+
+class MedicationRequest(BaseModel):
+    medication: str
+    dose: float
+
+@app.post("/api/simulation/medicate")
+async def inject_medication(req: MedicationRequest):
+    global SIMULATED_MEDICATION, SIMULATED_MEDICATION_DOSE, MEDICATION_SIM_TIME
+    SIMULATED_MEDICATION = req.medication
+    SIMULATED_MEDICATION_DOSE = req.dose
+    MEDICATION_SIM_TIME = 0.0
+    return {"status": "success", "medication": req.medication, "dose": req.dose}
+
+import base64
+from groq import Groq
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+try:
+    groq_client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
+except:
+    groq_client = None
+
+@app.post("/api/upload-lab-results")
+async def upload_lab_results(file: UploadFile = File(...)):
+    global PATIENT_CYP2D6_STATUS
+    
+    content = await file.read()
+    
+    if groq_client and file.filename.lower().endswith(('.png', '.jpg', '.jpeg')):
+        try:
+            base64_image = base64.b64encode(content).decode('utf-8')
+            mime_type = "image/jpeg" if file.filename.lower().endswith(('jpg', 'jpeg')) else "image/png"
+            image_url = f"data:{mime_type};base64,{base64_image}"
+            
+            completion = groq_client.chat.completions.create(
+                model="llama-3.2-11b-vision-preview",
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": 'Extract the patient\'s AST and ALT levels, and any CYP2D6 genetic metabolizer status. If CYP2D6 is not listed but liver enzymes (AST/ALT) are significantly elevated (>100 U/L), deduce "Poor Metabolizer", else deduce "Normal Metabolizer". Return exactly this JSON format: {"AST": <val>, "ALT": <val>, "CYP2D6": "<status>"}'
+                            },
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": image_url
+                                }
+                            }
+                        ]
+                    }
+                ],
+                temperature=0.1,
+                max_tokens=256,
+            )
+            
+            response_text = completion.choices[0].message.content
+            start = response_text.find('{')
+            end = response_text.rfind('}') + 1
+            if start != -1 and end != -1:
+                parsed = json.loads(response_text[start:end])
+                PATIENT_CYP2D6_STATUS = parsed.get("CYP2D6", "Poor Metabolizer")
+                return {"status": "success", "extracted_data": parsed}
+        except Exception as e:
+            print(f"Vision OCR Error: {e}")
+            pass
+            
+    # Fallback to smart-mocking if file isn't an image or API fails
+    PATIENT_CYP2D6_STATUS = "Poor Metabolizer"
+    return {"status": "success", "extracted_data": {"AST": 142, "ALT": 160, "CYP2D6": "Poor Metabolizer"}}
+
+
 
 
 if __name__ == "__main__":

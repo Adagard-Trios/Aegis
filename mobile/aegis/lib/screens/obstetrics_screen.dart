@@ -18,7 +18,7 @@ class ObstetricsScreen extends StatelessWidget {
       padding: const EdgeInsets.all(16.0),
       child: Column(
         children: [
-          LiveWaveform(title: 'FOETAL HEART RATE (CTTG)', dataSource: model.fhrData, color: AegisTheme.fhrColor, height: 200),
+          LiveWaveform(title: 'FOETAL HEART RATE (CTTG)', dataSource: model.fhrData, color: MedVerseTheme.fhrColor, height: 200),
           const SizedBox(height: 16),
           GridView.count(
             crossAxisCount: 2,
@@ -28,24 +28,24 @@ class ObstetricsScreen extends StatelessWidget {
             crossAxisSpacing: 12,
             childAspectRatio: 1.2,
             children: [
-              BiometricCard(title: 'FOETAL HR', value: model.hasKicks ? '145' : '140', unit: 'bpm', statusColor: AegisTheme.fhrColor),
+              BiometricCard(title: 'FOETAL HR', value: model.hasKicks ? '145' : '140', unit: 'bpm', statusColor: MedVerseTheme.fhrColor),
               BiometricCard(
                 title: 'ACCELERATIONS', 
                 value: model.hasKicks ? 'Reactive' : 'Quiet', 
                 unit: '', 
-                statusColor: model.hasKicks ? AegisTheme.statusWarning : AegisTheme.primary
+                statusColor: model.hasKicks ? MedVerseTheme.statusWarning : MedVerseTheme.primary
               ),
               BiometricCard(
                 title: 'UTERINE ACTIVITY', 
                 value: model.hasContractions ? 'Elevated' : 'None', 
                 unit: '', 
-                statusColor: model.hasContractions ? AegisTheme.statusCritical : AegisTheme.primary
+                statusColor: model.hasContractions ? MedVerseTheme.statusCritical : MedVerseTheme.primary
               ),
-              BiometricCard(title: 'MATERNAL HR', value: model.heartRate > 0 ? model.heartRate.toString() : '72', unit: 'bpm', statusColor: AegisTheme.spo2Color),
+              BiometricCard(title: 'MATERNAL HR', value: model.heartRate > 0 ? model.heartRate.toString() : '72', unit: 'bpm', statusColor: MedVerseTheme.spo2Color),
             ],
           ),
           const SizedBox(height: 24),
-          const Text('LATEST A.I. ANALYSIS', style: TextStyle(color: AegisTheme.textMuted, fontSize: 12, fontWeight: FontWeight.bold, letterSpacing: 1.5)),
+          const Text('LATEST A.I. ANALYSIS', style: TextStyle(color: MedVerseTheme.textMuted, fontSize: 12, fontWeight: FontWeight.bold, letterSpacing: 1.5)),
           const SizedBox(height: 12),
           InterpretationCard(
             title: "Obstetrics & Fetal Assessment",

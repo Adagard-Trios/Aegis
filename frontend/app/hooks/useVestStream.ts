@@ -70,6 +70,12 @@ export interface TelemetryData {
     film_pressure: number[];
     contractions: boolean[];
   };
+  pharmacology?: {
+    active_medication: string | null;
+    dose: number;
+    sim_time: number;
+    clearance_model: string;
+  };
 }
 
 const STREAM_URL = "http://localhost:8000/stream";

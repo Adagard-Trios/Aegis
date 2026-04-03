@@ -18,7 +18,7 @@ class RespiratoryScreen extends StatelessWidget {
       padding: const EdgeInsets.all(16.0),
       child: Column(
         children: [
-          LiveWaveform(title: 'PNEUMOGRAPHY (RSP)', dataSource: model.rspData, color: AegisTheme.rspColor, height: 200),
+          LiveWaveform(title: 'PNEUMOGRAPHY (RSP)', dataSource: model.rspData, color: MedVerseTheme.rspColor, height: 200),
           const SizedBox(height: 16),
           GridView.count(
             crossAxisCount: 2,
@@ -28,12 +28,12 @@ class RespiratoryScreen extends StatelessWidget {
             crossAxisSpacing: 12,
             childAspectRatio: 1.2,
             children: [
-              BiometricCard(title: 'RESP RATE', value: model.respiratoryRate.toString(), unit: 'bpm', statusColor: AegisTheme.rspColor),
-              BiometricCard(title: 'SpO2', value: model.spO2.toString(), unit: '%', statusColor: AegisTheme.primary),
+              BiometricCard(title: 'RESP RATE', value: model.respiratoryRate.toString(), unit: 'bpm', statusColor: MedVerseTheme.rspColor),
+              BiometricCard(title: 'SpO2', value: model.spO2.toString(), unit: '%', statusColor: MedVerseTheme.primary),
             ],
           ),
           const SizedBox(height: 24),
-          const Text('LATEST A.I. ANALYSIS', style: TextStyle(color: AegisTheme.textMuted, fontSize: 12, fontWeight: FontWeight.bold, letterSpacing: 1.5)),
+          const Text('LATEST A.I. ANALYSIS', style: TextStyle(color: MedVerseTheme.textMuted, fontSize: 12, fontWeight: FontWeight.bold, letterSpacing: 1.5)),
           const SizedBox(height: 12),
           const InterpretationCard(
             title: "Pulmonology Assessment",

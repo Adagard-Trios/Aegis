@@ -22,31 +22,31 @@ class SpecialistsScreen extends StatelessWidget {
         _buildExpertCard(
           'Cardiology',
           Icons.monitor_heart_rounded,
-          AegisTheme.ecgColor,
+          MedVerseTheme.ecgColor,
           () => onSelect('CARDIOLOGY', const CardiologyScreen()),
         ),
         _buildExpertCard(
           'Respiratory',
           Icons.air_rounded,
-          AegisTheme.rspColor,
+          MedVerseTheme.rspColor,
           () => onSelect('RESPIRATORY', const RespiratoryScreen()),
         ),
         _buildExpertCard(
           'Neurology',
           Icons.psychology_rounded,
-          AegisTheme.accent,
+          MedVerseTheme.accent,
           () => onSelect('NEUROLOGY', const NeurologyScreen()),
         ),
         _buildExpertCard(
           'Obstetrics',
           Icons.pregnant_woman_rounded,
-          AegisTheme.fhrColor,
+          MedVerseTheme.fhrColor,
           () => onSelect('OBSTETRICS', const ObstetricsScreen()),
         ),
         _buildExpertCard(
           'Gen Physician',
           Icons.medical_information_rounded,
-          AegisTheme.textMain,
+          MedVerseTheme.textMain,
           () => onSelect('GENERAL PHYSICIAN', const GeneralPhysicianScreen()),
         ),
       ],
@@ -58,7 +58,7 @@ class SpecialistsScreen extends StatelessWidget {
       onTap: onTap,
       borderRadius: BorderRadius.circular(16),
       child: Card(
-        color: AegisTheme.surfaceHighlight.withOpacity(0.5),
+        color: MedVerseTheme.surfaceHighlight.withOpacity(0.5),
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
