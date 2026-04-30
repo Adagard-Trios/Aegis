@@ -19,6 +19,53 @@ from src.utils.utils import EXPERT_TOOLS, get_today_str
 from src.utils.vector_store import get_history, save_interpretation
 from src.utils.db import insert_interpretation
 
+
+def _augment_with_ml_models(specialty: str, telemetry: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Attach structured-model outputs (ECGFounder, respiratory CNN, …) to the
+    tool_results dict when the relevant adapter has weights loaded and the
+    telemetry snapshot carries a raw waveform.
+
+    Returns a dict of extra {tool_name: json_string} entries — empty when
+    no adapters are ready.
+    """
+    extras: Dict[str, str] = {}
+    waveform = (telemetry or {}).get("waveform") or {}
+    if not waveform:
+        return extras
+
+    import numpy as np
+
+    if "Cardiology" in specialty:
+        try:
+            from src.ml.ecgfounder_adapter import get_ecgfounder
+            adapter = get_ecgfounder()
+            if adapter.is_loaded and waveform.get("ecg_lead2"):
+                signal = np.asarray(waveform["ecg_lead2"], dtype=float)
+                pred = adapter.classify(signal, fs=waveform.get("fs", 40))
+                if pred is not None:
+                    extras["ecgfounder_classification"] = json.dumps(pred)
+        except Exception:
+            pass
+
+    if "Pulmonary" in specialty or "Respiratory" in specialty:
+        try:
+            from src.ml.pulmonary_classifier import get_pulmonary_classifier
+            clf = get_pulmonary_classifier()
+            if clf.is_loaded and waveform.get("audio"):
+                audio = np.asarray(waveform["audio"], dtype=float)
+                pred = clf.predict(audio, fs=waveform.get("fs", 40))
+                if pred is not None:
+                    extras["respiratory_cnn_classification"] = json.dumps({
+                        "label": pred.label,
+                        "probs": pred.probs,
+                        "confidence": pred.confidence,
+                    })
+        except Exception:
+            pass
+
+    return extras
+
 def _get_model(specialty: str = None):
     # Cannot cache globally if different specialties use different keys!
     return GroqLLM(specialty).get_llm()
@@ -45,6 +92,14 @@ def _make_information_retrieval(specialty: str):
                 tool_results[tool_fn.name] = result
             except Exception as e:
                 tool_results[tool_fn.name] = f"ERROR: {e}"
+
+        # Augment with structured ML-model outputs when adapters are loaded
+        try:
+            telemetry = state.get("sensor_telemetry") or {}
+            ml_extras = _augment_with_ml_models(specialty, telemetry)
+            tool_results.update(ml_extras)
+        except Exception:
+            pass
 
         return {
             "tool_results": tool_results,

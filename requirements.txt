@@ -29,3 +29,19 @@ numpy
 scipy
 bleak
 python-multipart
+
+# ── FHIR R4 interop ────────────────────────────────────────────────────────
+fhir.resources>=7.0.0
+
+# ── Auth ───────────────────────────────────────────────────────────────────
+PyJWT>=2.8.0
+
+# ── TimescaleDB / Alembic (optional — only needed to migrate off SQLite) ───
+SQLAlchemy>=2.0
+alembic>=1.13
+asyncpg>=0.29
+psycopg2-binary>=2.9
+
+# ── Federated learning (optional — only needed for src/federated/) ─────────
+# flwr>=1.10
+# torch>=2.2

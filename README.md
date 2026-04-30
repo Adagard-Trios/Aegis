@@ -1,0 +1,919 @@
+# MedVerse
+
+> A multi-specialty clinical telemetry platform that streams live biometric data from a wearable vest and a maternal-fetal monitor, interprets it with a swarm of specialty AI agents, and surfaces the results through a web dashboard, a mobile app, and a 3D digital twin.
+
+MedVerse combines custom ESP32 hardware, a FastAPI + LangGraph backend, a Groq-powered multi-agent LLM layer, a Chroma-backed RAG memory, a Next.js web dashboard, and a Flutter cross-platform app into one system.
+
+---
+
+## Table of Contents
+
+- [What it is](#what-it-is)
+- [Key features](#key-features)
+- [Workflow diagrams](#workflow-diagrams)
+- [System architecture](#system-architecture)
+- [Repository layout](#repository-layout)
+- [Prerequisites](#prerequisites)
+- [Quick start](#quick-start)
+- [Environment variables](#environment-variables)
+- [HTTP / SSE API reference](#http--sse-api-reference)
+- [Authentication](#authentication)
+- [FHIR R4 interoperability](#fhir-r4-interoperability)
+- [Telemetry snapshot schema](#telemetry-snapshot-schema)
+- [IMU-derived biomarkers](#imu-derived-biomarkers)
+- [Persistence](#persistence)
+- [TimescaleDB migration](#timescaledb-migration)
+- [LangGraph topology](#langgraph-topology)
+- [Expert AI agents](#expert-ai-agents)
+- [ML model adapters](#ml-model-adapters)
+- [Federated learning](#federated-learning)
+- [ECG biometric identity](#ecg-biometric-identity)
+- [Sensor channel reference](#sensor-channel-reference)
+- [Simulation & PK/PD modeling](#simulation--pkpd-modeling)
+- [Web dashboard (frontend/)](#web-dashboard-frontend)
+- [Mobile app (mobile/aegis)](#mobile-app-mobileaegis)
+- [Firmware (PlatformIO/)](#firmware-platformio)
+- [Firmware sample-rate architecture](#firmware-sample-rate-architecture)
+- [ML pipelines (models/)](#ml-pipelines-models)
+- [Development notes](#development-notes)
+- [Troubleshooting](#troubleshooting)
+- [Security notice](#security-notice)
+- [Roadmap](#roadmap)
+- [License](#license)
+
+---
+
+## What it is
+
+MedVerse is an end-to-end telemedicine platform built around two custom wearables — the **Aegis Vest** (ESP32-S3) and the **AbdomenMonitor** (ESP32) — streaming biomedical signals at 40 Hz over BLE to a FastAPI backend. The backend buffers the signals, derives clinical metrics (HR, HRV, SpO₂, breathing rate, perfusion index, posture, fetal kicks, contractions, etc.), persists snapshots to SQLite, and feeds them into a LangGraph multi-agent workflow of specialty experts (cardiology, pulmonary, neurology, dermatology, gynecology/obstetrics, ocular, general physician). Each expert is grounded in a clinical knowledge markdown file and a Chroma-backed RAG memory, and emits a structured JSON assessment (finding / severity / severity score / recommendations / confidence).
+
+The same telemetry stream drives a Next.js 16 dashboard — with a 3D React-Three-Fiber digital twin, per-specialty views, and voice-enabled expert chat — and a Flutter app that runs on Android, iOS, Web, Windows, macOS and Linux.
+
+## Key features
+
+- **Live 10 Hz SSE telemetry** from 30+ sensor channels.
+- **Dual BLE devices** — Aegis vest (PPG × 3 sites, 3-lead ECG, 3 skin-temp probes, dual-IMU, BMP280/DHT11, I²S acoustic) and AbdomenMonitor (piezo ×4, MEMS mic, flex film for contractions, ADS1115 16-bit ADC).
+- **Graceful mock-data fallback** when no BLE device is present — every part of the stack runs without hardware.
+- **Nine-node LangGraph workflow** with patient and doctor orchestrators and 7 parallel specialty sub-graphs, generated from a shared [graph_factory.py](src/graphs/graph_factory.py).
+- **Groq-hosted LLM** inference (`openai/gpt-oss-120b`) with per-specialty API key overrides.
+- **Biomedical RAG** — Chroma-backed history per specialty, defaults to the `FremyCompany/BioLORD-2023` biomedical encoder with automatic fallback to `all-MiniLM-L6-v2`.
+- **Two-compartment PK/PD simulation** — labetalol and oxytocin modeled with a Bateman curve (rise → peak → elimination), CYP2D6-aware clearance, bootstrapped from an OCR pass over uploaded lab-result images (Groq `llama-3.2-11b-vision-preview`).
+- **FHIR R4 interoperability** — telemetry serialized as LOINC-coded `Observation` / `Bundle` resources, expert findings as `DiagnosticReport` resources — drop-in compatible with hospital EMRs.
+- **Feature-flagged JWT auth** + environment-driven CORS allowlist; enable without changing frontend ports.
+- **IMU-derived clinical biomarkers** — tremor-band FFT, gait symmetry, POTS detection, activity classification — all from sensors already on the vest.
+- **ML adapter scaffolding** — ECGFounder (10.7M-ECG foundation model), ICBHI respiratory-sound CNN, ECG-biometric Siamese network — plug in weights and the cardiology/pulmonary graphs upgrade from "LLM-only" to structured-model-grounded.
+- **Federated learning skeleton** (Flower) — train across patients without their raw biometrics ever leaving their device.
+- **TimescaleDB-ready migration** (`alembic upgrade head`) — hypertables + continuous aggregates for the `/history` route.
+- **Temporal "what-if" scrubbing** — switch the stream between `Live`, `6h`, `12h`, `24h`, `2w`, `4w` projections.
+- **3D digital twin** — GLTF human avatar that reacts in real time to HR, temp, posture, uterine contractions, and fetal kicks.
+- **Voice-enabled expert chat** — Web Speech API STT/TTS with markdown-streamed answers.
+
+## Workflow diagrams
+
+The orchestration flow is documented as two PNGs under [assets/](assets/):
+
+![Patient workflow](assets/patient-workflow-updated-4.png)
+
+![Doctor workflow](assets/doctor-workflow-updated-4.png)
+
+## System architecture
+
+```
+ ┌─────────────────────┐       ┌──────────────────────┐
+ │  Aegis Vest         │       │  AbdomenMonitor      │
+ │  ESP32-S3           │       │  ESP32-Dev           │
+ │  PPG×3, ECG, IMU×2, │       │  Piezo×4, MEMS mic,  │
+ │  DS18B20×3, BMP280, │       │  flex film, ADS1115  │
+ │  DHT11, I²S audio   │       │                      │
+ └──────────┬──────────┘       └──────────┬───────────┘
+            │  BLE (NimBLE)               │  BLE
+            │  Aegis_SpO2_Live            │  AbdomenMonitor
+            │  char beb5483e-…            │  char 12345678-…
+            └──────────────┬──────────────┘
+                           ▼
+            ┌─────────────────────────────────────┐
+            │   FastAPI backend (app.py, :8000)   │
+            │   • Env-driven sample rate          │
+            │     (BUFFER_SIZE = rate × 20 s)     │
+            │   • scipy.signal DSP                │
+            │   • IMU biomarkers (tremor, gait,   │
+            │     POTS, activity state)           │
+            │   • Dawes-Redman CTG (30-min ring)  │
+            │   • CORS allowlist (env-driven)     │
+            │   • JWT bearer auth (opt-in)        │
+            │   • FHIR R4 Observation/Bundle/DR   │
+            │   • Mock generator fallback         │
+            └────┬───────────────────────────┬────┘
+                 │                           │ 1 Hz writer
+                 │ SSE 10 Hz + REST          │  (patient_id-keyed)
+                 ▼                           ▼
+    ┌─────────────────────┐   ┌──────────────────────────────────┐
+    │ Next.js dash :3000  │   │ Persistence layer (src/utils/db) │
+    │ • /login JWT flow   │   │ • SQLite (default)               │
+    │ • /history recharts │   │   — aegis_local.db               │
+    │ • 3D twin + chat    │   │ • PostgreSQL + TimescaleDB       │
+    │ • NEXT_PUBLIC_API   │   │   when MEDVERSE_DB_URL is set    │
+    └─────────────────────┘   │   (hypertables + 1m/1h CAggs)    │
+                 │            └──────────────────────────────────┘
+                 │
+                 │ SSE / REST + Bearer
+                 ▼
+    ┌─────────────────────┐
+    │ Flutter app         │
+    │ • Login gate        │
+    │ • flutter_secure_   │
+    │   storage JWT       │
+    │ • ApiConfig over-   │
+    │   ridable baseUrl   │
+    └─────────────────────┘
+
+     ┌───────────────── LangGraph multi-agent layer ─────────────────┐
+     │  patient_graph ── orchestrator ── fan-out                     │
+     │            ├── cardiology_graph    ──┐                        │
+     │            ├── pulmonary_graph     ──┤                        │
+     │            ├── neurology_graph     ──┤                        │
+     │            ├── dermatology_graph   ──┼─▶ general_physician    │
+     │            ├── gynology_graph      ──┤     (synthesis)        │
+     │            └── occular_graph       ──┘                        │
+     │  doctor_graph ── clinical-staff variant                       │
+     │  Each expert → Groq LLM + src/knowledge/*.md + Chroma RAG     │
+     └───────────────────────────────────────────────────────────────┘
+```
+
+## Repository layout
+
+```
+X-New-Final/
+├── app.py                    # FastAPI backend — BLE, SSE, REST, DSP, PK/PD, OCR
+├── main.py                   # Minimal aux entry
+├── langgraph.json            # Registers 9 LangGraph graphs
+├── pyproject.toml            # Python deps (requires-python >=3.13)
+├── requirements.txt          # pip-compatible dep list
+├── uv.lock                   # uv resolver lockfile
+├── .python-version           # 3.13
+├── .env                      # Groq API keys (see SECURITY notice)
+├── aegis_local.db            # SQLite telemetry + interpretations (~100 MB)
+├── chroma_data/              # Chroma vector store, one collection per specialty
+├── .langgraph_api/           # LangGraph CLI checkpoint pickles
+├── assets/                   # Workflow diagram PNGs
+├── src/
+│   ├── graphs/               # 9 LangGraph definitions + graph_factory.py
+│   ├── nodes/                # Graph node implementations
+│   ├── states/               # Typed workflow state (patient/doctor/expert)
+│   ├── llms/                 # Groq client wrappers
+│   ├── knowledge/            # 7 specialty clinical reference .md files
+│   ├── utils/                # db.py, fhir.py, auth.py, imu_features.py, …
+│   ├── ml/                   # ECGFounder / respiratory-CNN runtime adapters
+│   ├── biometric/            # ECG-biometric Siamese identity module
+│   ├── federated/            # Flower federated-learning client + server
+│   └── exception/            # Error types
+├── alembic/                  # TimescaleDB migration (hypertables + aggregates)
+│   └── versions/
+│       └── 001_timescale_init.py
+├── alembic.ini
+├── .env.example              # Full env-var reference (safe to commit)
+├── frontend/                 # Next.js 16 dashboard (React 19 + Three.js)
+├── mobile/aegis/             # Flutter cross-platform client
+├── PlatformIO/
+│   ├── vest/                 # ESP32-S3 vest firmware + WIRING.md
+│   └── fetal_monitor/        # ESP32-Dev abdomen/fetal firmware
+└── models/                   # ML weights — adapters load from here when present
+    ├── ecg/ecgfounder/       # weights.pt, labels.txt (user-supplied)
+    ├── ecg/biometric_siamese/# weights.pt (user-supplied)
+    └── pulmonary/icbhi_cnn/  # weights.pt, class_names.json (user-supplied)
+```
+
+## Prerequisites
+
+| Component  | Requirement                                                        |
+|------------|--------------------------------------------------------------------|
+| Backend    | **Python 3.13** (per [.python-version](.python-version) and [pyproject.toml](pyproject.toml)) |
+| Frontend   | **Node 20+**, npm                                                  |
+| Mobile     | **Flutter ≥ 3.11**, Dart SDK ^3.11.0 (per [mobile/aegis/pubspec.yaml](mobile/aegis/pubspec.yaml)) |
+| Firmware   | **PlatformIO CLI** (`pio`) or the VS Code PlatformIO extension     |
+| LLM        | A **Groq API key** (https://console.groq.com)                      |
+| OS         | Windows / macOS / Linux. BLE hardware optional (mock fallback)     |
+
+## Quick start
+
+### 1. Backend
+
+```bash
+# Install deps (pip or uv)
+pip install -r requirements.txt
+# …or:
+uv sync
+
+# Copy the example env and fill in your Groq key(s)
+cp .env.example .env
+# …then edit .env and replace every `gsk_replace_me` with a real key
+
+# Run — binds 0.0.0.0:8000
+python app.py
+```
+
+Optional install extras:
+
+```bash
+# Only if you plan to run src/federated/ (Flower + PyTorch)
+pip install "flwr>=1.10" "torch>=2.2"
+
+# Only if you're migrating off SQLite to TimescaleDB
+pip install "psycopg2-binary>=2.9"
+```
+
+On startup, [app.py](app.py) spawns:
+- a BLE thread that scans for `Aegis_SpO2_Live` and `AbdomenMonitor` (10 s timeout) and falls back to a mock generator if neither is found,
+- a SQLite writer thread that persists a snapshot every 1 s,
+- the FastAPI app with `CORS` `allow_origins=["*"]`.
+
+### 2. Frontend
+
+```bash
+cd frontend
+npm install
+npm run dev       # http://localhost:3000
+# or: npm run build && npm run start
+# or: npm run lint
+```
+
+The dashboard connects to `http://localhost:8000/stream` via `EventSource` with a 3-second auto-reconnect.
+
+### 3. Mobile app
+
+```bash
+cd mobile/aegis
+flutter pub get
+flutter run          # pick your target (android/ios/web/windows/macos/linux)
+```
+
+### 4. Firmware
+
+```bash
+# Aegis vest (ESP32-S3)
+cd PlatformIO/vest
+pio run -t upload
+pio device monitor -b 115200
+
+# Abdomen / fetal monitor (ESP32-Dev — pinned to COM3 on Windows)
+cd ../fetal_monitor
+pio run -t upload
+pio device monitor -b 115200
+```
+
+See [PlatformIO/vest/WIRING.md](PlatformIO/vest/WIRING.md) for the full pinout.
+
+### 5. LangGraph dev server (optional)
+
+```bash
+# Opens LangGraph Studio against langgraph.json
+langgraph dev
+```
+
+## Environment variables
+
+All variables are loaded from [.env](.env) via `python-dotenv`. A complete, safe-to-commit template lives in [.env.example](.env.example) — copy it to `.env` and fill in the Groq key(s). The backend falls back to the shared `GROQ_API_KEY` when a specialty-specific key is absent.
+
+### Groq LLM keys
+
+| Variable                              | Purpose                                                     |
+|---------------------------------------|-------------------------------------------------------------|
+| `GROQ_API_KEY`                        | Default Groq key (used by `app.py` OCR + fallback for all experts) |
+| `CARDIOLOGY_EXPERT_GROQ_API_KEY`      | Cardiology expert LLM                                       |
+| `PULMONARY_EXPERT_GROQ_API_KEY`       | Pulmonary expert LLM                                        |
+| `NEUROLOGY_EXPERT_GROQ_API_KEY`       | Neurology expert LLM                                        |
+| `DERMATOLOGY_EXPERT_GROQ_API_KEY`     | Dermatology expert LLM                                      |
+| `GYNECOLOGY_EXPERT_GROQ_API_KEY`      | Gynecology/obstetrics expert LLM                            |
+| `OCULOMETRIC_EXPERT_GROQ_API_KEY`     | Ocular/oculometric expert LLM                               |
+| `GENERAL_PHYSICIAN_GROQ_API_KEY`      | Synthesizing general-physician LLM                          |
+| `INFECTIOUS_DISEASE_EXPERT_GROQ_API_KEY` | Reserved — infectious-disease expert                     |
+| `PSYCHIATRIC_EXPERT_GROQ_API_KEY`     | Reserved — psychiatric expert                               |
+| `ENVIRONMENT_EXPERT_GROQ_API_KEY`     | Reserved — environmental-health expert                      |
+| `ENT_EXPERT_GROQ_API_KEY`             | Reserved — ENT expert                                       |
+| `ORTHOPEDIC_EXPERT_GROQ_API_KEY`      | Reserved — orthopedic expert                                |
+| `PHARMACOLOGY_EXPERT_GROQ_API_KEY`    | Reserved — pharmacology expert                              |
+| `ENDCRINOLIGIST_EXPERT_GROQ_API_KEY`  | Reserved — endocrinology expert (note misspelling in `.env`) |
+| `NEPHROLOGY_EXPERT_GROQ_API_KEY`      | Reserved — nephrology expert                                |
+
+### Backend runtime flags
+
+| Variable                          | Default                                               | Purpose |
+|-----------------------------------|-------------------------------------------------------|---------|
+| `MEDVERSE_SAMPLE_RATE`            | `40`                                                  | Expected BLE payload cadence. Drives `BUFFER_SIZE`, `SPO2_WINDOW`, `BR_WINDOW`. See [Firmware sample-rate architecture](#firmware-sample-rate-architecture) before bumping this past `40` — NimBLE packet rate is the real ceiling, not the env var. |
+| `MEDVERSE_AUTH_ENABLED`           | `false`                                               | When `true`, `/api/**` endpoints require a valid JWT bearer token |
+| `MEDVERSE_JWT_SECRET`             | `dev-insecure-change-me`                              | HMAC secret used to sign JWTs — **rotate before any real use** |
+| `MEDVERSE_JWT_ALG`                | `HS256`                                               | JWT signing algorithm |
+| `MEDVERSE_JWT_EXPIRY_SECONDS`     | `3600`                                                | Access-token lifetime |
+| `MEDVERSE_DEV_USERNAME`           | `medverse`                                            | Dev-login username (`POST /api/auth/login`) |
+| `MEDVERSE_DEV_PASSWORD`           | `medverse`                                            | Dev-login password |
+| `MEDVERSE_CORS_ORIGINS`           | `http://localhost:3000,http://127.0.0.1:3000`         | Comma-separated CORS origin allowlist |
+| `MEDVERSE_EMBEDDING_MODEL`        | `FremyCompany/BioLORD-2023`                           | Primary Chroma embedding model (auto-falls back to `all-MiniLM-L6-v2`) |
+| `MEDVERSE_INCLUDE_WAVEFORM`       | `false`                                               | When `true`, `/stream` includes the raw 800-sample waveform buffers (needed by the ML adapters) |
+| `MEDVERSE_MODELS_DIR`             | `./models`                                            | Root searched by `src/ml/` and `src/biometric/` adapters for weight files |
+| `MEDVERSE_BIOMETRIC_THRESHOLD`    | `0.75`                                                | Cosine-similarity threshold for a positive biometric match |
+| `MEDVERSE_DB_URL`                 | *(unset)*                                             | Postgres/Timescale connection string. When set, telemetry + interpretation writes go to Postgres and `/api/history` reads from the `telemetry_vitals_*` continuous aggregates. |
+| `NEXT_PUBLIC_API_URL`             | `http://localhost:8000`                               | Frontend-side — points the Next.js dashboard at any backend host. See [frontend/.env.example](frontend/.env.example). |
+
+### Federated-learning (optional)
+
+| Variable          | Default         | Purpose                        |
+|-------------------|-----------------|--------------------------------|
+| `FL_SERVER`       | `127.0.0.1:8080`| FedAvg aggregator address      |
+| `FL_PATIENT_ID`   | `default_patient`| Client's patient id           |
+| `FL_ROUNDS`       | `10`            | Number of aggregation rounds   |
+
+The frontend has **no** `.env`; its backend URL is hard-coded to `http://localhost:8000`.
+
+## HTTP / SSE API reference
+
+All endpoints are defined in [app.py](app.py). Base URL: `http://localhost:8000`. Swagger UI: `http://localhost:8000/docs`.
+
+### Telemetry
+
+| Method | Path                          | Purpose |
+|--------|-------------------------------|---------|
+| GET    | `/api/status`                 | Device-connection flags, sample rate, packet count |
+| GET    | `/stream?token=…&patient_id=…` | **SSE** — 10 Hz telemetry snapshot stream (with simulation-mode + PK/PD overlay). `token` required when `MEDVERSE_AUTH_ENABLED=true` (EventSource can't carry headers). |
+| GET    | `/api/snapshot?patient_id=…`  | Latest telemetry row from the active DB backend (falls back to live snapshot) |
+| GET    | `/api/interpretations?patient_id=…` | Latest AI interpretation per specialty |
+| GET    | `/api/history?resolution=1m\|1h&patient_id=…&limit=500` | Rolled-up HR / SpO₂ / BR / HRV time series — uses Timescale continuous aggregates when `MEDVERSE_DB_URL` is set, otherwise bucketed from SQLite |
+| GET    | `/api/patient/active`         | Returns the in-memory `ACTIVE_PATIENT_ID` used by the snapshot writer |
+| POST   | `/api/patient/active`         | Body: `{"patient_id": str}` — sets the writer's active patient |
+
+### Simulation
+
+| Method | Path                          | Purpose |
+|--------|-------------------------------|---------|
+| POST   | `/api/simulation/mode`        | Body: `{"mode": "Live"\|"6h"\|"12h"\|"24h"\|"2w"\|"4w"}` |
+| POST   | `/api/simulation/medicate`    | Body: `{"medication": str, "dose": float}` — starts a Bateman PK/PD curve |
+| POST   | `/api/upload-lab-results`     | Multipart `file` (PNG/JPG lab report) — extracts AST/ALT/CYP2D6 via Groq vision and sets `PATIENT_CYP2D6_STATUS` |
+
+### Authentication
+
+| Method | Path                          | Purpose |
+|--------|-------------------------------|---------|
+| POST   | `/api/auth/login`             | Body: `{"username": str, "password": str}` → `{"access_token": "...", "token_type": "bearer"}` |
+| GET    | `/api/auth/me`                | Returns the decoded JWT payload (or `{"sub":"anonymous"}` when auth is disabled) |
+
+### FHIR R4 interop
+
+| Method | Path                                          | Purpose |
+|--------|-----------------------------------------------|---------|
+| GET    | `/api/fhir/Observation/latest`                | Latest snapshot as a list of LOINC-coded `Observation` resources |
+| GET    | `/api/fhir/Bundle/latest`                     | Same, wrapped in a `Bundle` of `type: collection` |
+| GET    | `/api/fhir/DiagnosticReport/latest`           | All specialty interpretations as `DiagnosticReport` resources |
+| GET    | `/api/fhir/DiagnosticReport/{specialty}/latest` | Single specialty's latest `DiagnosticReport` |
+| GET    | `/api/fhir/Patient/{patient_id}`              | Minimal `Patient` resource |
+| GET    | `/api/fhir/Device`                            | `Device` resources for the vest and abdomen monitor |
+
+All FHIR routes accept an optional `?patient_id=...` query parameter (default `medverse-demo-patient`) and are gated by `Depends(require_user)` — anonymous-passthrough while `MEDVERSE_AUTH_ENABLED=false`.
+
+### Stream payload
+
+The SSE `data:` field is a JSON object shaped like the telemetry snapshot in the next section.
+
+## Telemetry snapshot schema
+
+Built by `build_telemetry_snapshot()` in [app.py](app.py). Emitted on `/stream` at 10 Hz and persisted to SQLite at 1 Hz.
+
+```jsonc
+{
+  "timestamp": 12345,
+  "ppg":        { "ir1", "red1", "ir2", "red2", "ira", "reda", "t1", "t2" },
+  "temperature":{ "left_axilla", "right_axilla", "cervical" },
+  "imu":        { "upper_pitch", "upper_roll", "lower_pitch", "lower_roll",
+                  "spinal_angle", "poor_posture", "posture_label",
+                  "bmp180_pressure", "bmp180_temp" },
+  "environment":{ "bmp280_pressure", "bmp280_temp",
+                  "dht11_humidity", "dht11_temp" },
+  "ecg":        { "lead1", "lead2", "lead3", "ecg_hr" },
+  "audio":      { "analog_rms", "digital_rms" },
+  "vitals":     { "heart_rate", "spo2", "breathing_rate",
+                  "hrv_rmssd", "perfusion_index", "signal_quality" },
+  "connection": { "vest_connected", "fetal_connected", "using_mock" },
+  "fetal":      { "mode", "piezo_raw[4]", "kicks[4]", "movement[4]",
+                  "mic_volts[2]", "heart_tones[2]", "bowel_sounds[2]",
+                  "film_pressure[2]", "contractions[2]" },
+  "pharmacology":{ "active_medication", "dose", "sim_time",
+                   "clearance_model", "effect_curve", "k_el" },
+  "imu_derived": {
+    "tremor":   { "band_power", "total_power", "band_ratio", "tremor_flag" },
+    "gait":     { "stride_count", "mean_stride_s", "stride_cv", "asymmetry_flag" },
+    "pots":     { "hr_jump", "angle_delta", "pots_flag" },
+    "activity_state": "rest|walking|running|unknown"
+  },
+  "waveform":   null  // or, when MEDVERSE_INCLUDE_WAVEFORM=true:
+                      // { "fs", "ecg_lead1[800]", "ecg_lead2[800]", "ecg_lead3[800]",
+                      //   "ppg_ira[800]", "ppg_reda[800]", "audio[800]" }
+}
+```
+
+Derived vitals are produced with `scipy.signal`:
+- **HR / HRV (RMSSD)** — band-pass 0.5–4 Hz on IRA PPG, then `find_peaks` with a 180-bpm-max refractory window ([app.py:160](app.py#L160)).
+- **SpO₂** — AC/DC ratio of RedA/IRA against a 30-entry lookup table ([app.py:139](app.py#L139)).
+- **Breathing rate** — 0.5 Hz low-pass on IR1 over a 10-s window ([app.py:187](app.py#L187)).
+- **Perfusion index** — `std(IRA) / mean(IRA) × 100` ([app.py:200](app.py#L200)).
+- **Signal quality** — discretized `Excellent / Good / Fair / Poor / No contact` from PI.
+- **Posture label** — spinal-angle magnitude thresholds (5° / 15°).
+
+## Authentication
+
+Implemented in [src/utils/auth.py](src/utils/auth.py). Off by default so the existing frontend keeps working; flip on with a single env var.
+
+```bash
+# Enable
+MEDVERSE_AUTH_ENABLED=true \
+MEDVERSE_JWT_SECRET=<long-random-string> \
+python app.py
+
+# Log in (dev credentials in .env.example: medverse/medverse)
+curl -X POST http://localhost:8000/api/auth/login \
+  -H 'content-type: application/json' \
+  -d '{"username":"medverse","password":"medverse"}'
+# → {"access_token":"eyJ...","token_type":"bearer","auth_enabled":true}
+
+# Call a protected endpoint
+curl http://localhost:8000/api/fhir/Observation/latest \
+  -H 'authorization: Bearer eyJ...'
+```
+
+Signing algorithm and token lifetime are env-configurable (`MEDVERSE_JWT_ALG`, `MEDVERSE_JWT_EXPIRY_SECONDS`). All `/api/fhir/**` endpoints use `Depends(require_user)` — they pass an anonymous principal through when auth is disabled, and 401 with `WWW-Authenticate: Bearer` when it is enabled and no/invalid token is sent.
+
+### CORS
+
+Driven by `MEDVERSE_CORS_ORIGINS` — a comma-separated allowlist. Default covers both `localhost:3000` and `127.0.0.1:3000` so the Next.js dev server works without extra configuration.
+
+## FHIR R4 interoperability
+
+Implemented in [src/utils/fhir.py](src/utils/fhir.py). Serializers emit plain dicts conforming to the FHIR R4 JSON shape; if the optional `fhir.resources` package is installed, outputs are additionally validated against the official Pydantic models.
+
+### Observation coding
+
+| Telemetry field              | LOINC code | Display                    | Unit    |
+|------------------------------|------------|----------------------------|---------|
+| `vitals.heart_rate`          | `8867-4`   | Heart rate                 | `/min`  |
+| `vitals.spo2`                | `59408-5`  | Oxygen saturation          | `%`     |
+| `vitals.breathing_rate`      | `9279-1`   | Respiratory rate           | `/min`  |
+| `vitals.hrv_rmssd`           | `80404-7`  | R-R interval SDNN          | `ms`    |
+| `vitals.perfusion_index`     | `61006-3`  | Perfusion index            | `%`     |
+| `temperature.cervical`       | `8310-5`   | Body temperature           | `Cel`   |
+| `temperature.left_axilla`    | `8328-7`   | Axillary temp (left)       | `Cel`   |
+| `temperature.right_axilla`   | `8328-7`   | Axillary temp (right)      | `Cel`   |
+| `imu.spinal_angle`           | `41950-7`  | Posture angle              | `deg`   |
+| `fetal.contractions`         | `82310-5`  | Uterine contraction count  | `{count}` |
+
+### DiagnosticReport coding
+
+| Specialty            | LOINC code | Display                 |
+|----------------------|------------|-------------------------|
+| Cardiology           | `18753-8`  | Cardiology study        |
+| Pulmonary            | `18748-8`  | Pulmonology study       |
+| Neurology            | `47043-1`  | Neurology consultation  |
+| Dermatology          | `34111-5`  | Dermatology report      |
+| Gynecology           | `47040-7`  | Obstetrics consultation |
+| Ocular               | `29271-4`  | Ophthalmology report    |
+| General physician    | `11488-4`  | Consultation note       |
+
+Each `DiagnosticReport` carries three MedVerse extensions: `severity` (`valueString`), `severity-score` (`valueDecimal`), `ai-confidence` (`valueDecimal`).
+
+### Example
+
+```bash
+curl http://localhost:8000/api/fhir/Bundle/latest?patient_id=patient-042 | jq
+```
+
+```jsonc
+{
+  "resourceType": "Bundle",
+  "type": "collection",
+  "timestamp": "2026-04-19T14:22:33.512Z",
+  "entry": [
+    { "resource": { "resourceType": "Observation", "code": { "coding": [{ "system": "http://loinc.org", "code": "8867-4" }] }, "valueQuantity": { "value": 78.0, "unit": "/min" }, "...": "..." } },
+    { "resource": { "resourceType": "Observation", "code": { "coding": [{ "system": "http://loinc.org", "code": "59408-5" }] }, "valueQuantity": { "value": 97.0, "unit": "%" }, "...": "..." } }
+  ]
+}
+```
+
+## Dawes-Redman CTG surrogate
+
+Maternal-fetal CTG (cardiotocography) analysis runs out-of-band from the 800-sample telemetry buffers — proper Dawes-Redman criteria require a 10-minute FHR trace. [src/utils/ctg_dawes_redman.py](src/utils/ctg_dawes_redman.py) maintains a 30-minute, 1 Hz ring buffer seeded from every snapshot and attaches its latest assessment at `fetal.dawes_redman`:
+
+```jsonc
+"dawes_redman": {
+  "samples":          1234,      // seconds accumulated
+  "analysis_ready":   true,      // ≥ 10 min of data
+  "baseline_fhr":     142.3,     // bpm, trimmed mean
+  "stv_ms":           4.8,       // short-term variation
+  "accelerations":    3,         // ≥15 bpm rises held ≥15 s
+  "decelerations":    0,
+  "criteria_met":     true       // baseline 110-160, stv ≥ 3 ms, ≥1 accel, no decels
+}
+```
+
+When the AbdomenMonitor piezo stream is absent the analyzer falls back to a maternal-HR-offset FHR estimate (maternal + 65 bpm, clipped to 110-165) so demos without fetal hardware still populate the dashboard. This is a **screening surrogate**, not the full commercial Sonicaid algorithm — it captures baseline, STV, accels and decels, and the composite criteria gate.
+
+## IMU-derived biomarkers
+
+Computed in [src/utils/imu_features.py](src/utils/imu_features.py) from the two MPU6050 IMU streams already on the vest — no hardware changes, no sampling-rate changes. Appended to every telemetry snapshot under `imu_derived`.
+
+| Biomarker                  | Method | Flag condition | Clinical relevance |
+|----------------------------|--------|----------------|--------------------|
+| `tremor.band_power`        | Welch PSD of combined upper IMU, integrated over 4–8 Hz | `band_ratio > 0.25` and `band_power > 0.01` | Parkinson's resting tremor band |
+| `gait.stride_cv`           | Coefficient of variation of stride intervals from lower-IMU pitch peaks | `stride_cv > 0.10` | Validated fall-risk marker |
+| `pots.pots_flag`           | HR jump within 30 s of posture-angle change | `hr_jump > 30 bpm` **and** `|angle_delta| > 20°` | Postural orthostatic tachycardia |
+| `activity_state`           | IMU magnitude variance thresholds (rest/walking/running) | — | Context-aware vital normalization |
+
+All functions are tolerant of short or empty buffers (return zeros + `False` flags) so the 10 Hz SSE loop never blocks on a DSP edge case.
+
+## Persistence
+
+| Store                      | Location                  | What it holds |
+|----------------------------|---------------------------|---------------|
+| SQLite (default)           | [aegis_local.db](aegis_local.db) | `telemetry(id, timestamp_str, patient_id, data JSON)` and `interpretations(id, timestamp_str, patient_id, specialty, findings, severity, severity_score)`. Written at 1 Hz under `ACTIVE_PATIENT_ID` by `sqlite_writer_loop`. Indexed on `(patient_id, id DESC)`. |
+| PostgreSQL + TimescaleDB   | Postgres at `MEDVERSE_DB_URL` | Hypertables with the same columns (`ts TIMESTAMPTZ`, `data JSONB`), plus `telemetry_vitals_1m` / `telemetry_vitals_1h` continuous aggregates and a 30-day retention policy. [src/utils/db.py](src/utils/db.py) routes reads/writes here automatically when the env var is set. |
+| Chroma vector store        | [chroma_data/](chroma_data/) | One collection per specialty (e.g. `cardiology_history`). Embeddings: HuggingFace `BioLORD-2023` (default) or `all-MiniLM-L6-v2` (fallback). |
+| LangGraph checkpoints      | [.langgraph_api/](.langgraph_api/) | `.langgraph_checkpoint.*.pckl`, `.langgraph_ops.pckl`, `store.*` — in-memory store snapshots persisted by `langgraph dev`. |
+
+## TimescaleDB migration
+
+SQLite ([aegis_local.db](aegis_local.db)) is the default and requires no setup. A drop-in PostgreSQL + TimescaleDB migration is staged under [alembic/](alembic/) for when the data volume outgrows SQLite's JSON-blob scans.
+
+```bash
+# One-time: create the DB + enable the extension on your Postgres server
+createdb medverse
+psql medverse -c "CREATE EXTENSION IF NOT EXISTS timescaledb;"
+
+# Apply
+export MEDVERSE_DB_URL=postgresql+asyncpg://medverse:<pw>@localhost:5432/medverse
+alembic upgrade head
+```
+
+The migration at [alembic/versions/001_timescale_init.py](alembic/versions/001_timescale_init.py) creates:
+
+- **`telemetry`** hypertable — `id`, `patient_id`, `ts`, `data JSONB`, GIN index on `data`, composite index on `(patient_id, ts DESC)`.
+- **`interpretations`** hypertable — specialty + severity + severity_score, indexed on `(patient_id, specialty, ts DESC)`.
+- **`telemetry_vitals_1m`** continuous aggregate — 1-minute averages of HR / SpO₂ / BR / HRV.
+- **`telemetry_vitals_1h`** continuous aggregate — 1-hour averages.
+- 30-day retention policy on raw telemetry (aggregates keep forever).
+
+The FastAPI backend still reads/writes SQLite until you switch the writer loop in [src/utils/db.py](src/utils/db.py) — the migration is a ready-to-apply artifact, not an in-place replacement.
+
+## LangGraph topology
+
+Registered in [langgraph.json](langgraph.json):
+
+| Graph id                   | Source                                                          | Role |
+|----------------------------|-----------------------------------------------------------------|------|
+| `patient_graph`            | [src/graphs/patient_graph.py](src/graphs/patient_graph.py)      | Patient-facing orchestrator — init → parallel (monitoring, expert swarm) → audience-aware compiler |
+| `doctor_graph`             | [src/graphs/doctor_graph.py](src/graphs/doctor_graph.py)        | Clinician-facing orchestrator with NFC/records integration and critical-alert prioritization |
+| `cardiology_graph`         | [src/graphs/cardiology_graph.py](src/graphs/cardiology_graph.py) | ECG/PPG-driven cardiac assessment |
+| `pulmonary_graph`          | [src/graphs/pulmonary_graph.py](src/graphs/pulmonary_graph.py)  | SpO₂, breathing, lung-sound assessment |
+| `neurology_graph`          | [src/graphs/neurology_graph.py](src/graphs/neurology_graph.py)  | IMU-derived gait, tremor, fall-risk, autonomic HRV |
+| `dermatology_graph`        | [src/graphs/dermatology_graph.py](src/graphs/dermatology_graph.py) | Skin-temp gradient, sweat profile |
+| `gynology_graph`*          | [src/graphs/gynology_graph.py](src/graphs/gynology_graph.py)    | Maternal-fetal: FHR, contractions, kicks, Dawes-Redman |
+| `occular_graph`*           | [src/graphs/occular_graph.py](src/graphs/occular_graph.py)      | Ocular / oculometric surrogate |
+| `general_physician_graph`  | [src/graphs/general_physician_graph.py](src/graphs/general_physician_graph.py) | Synthesizer — combines specialist outputs into a unified narrative |
+
+*`gynology_graph` and `occular_graph` preserve the in-repo spelling — keep the id verbatim when calling the LangGraph API.
+
+The specialty sub-graphs share a common `information_retrieval → interpretation_generation` skeleton produced by [src/graphs/graph_factory.py](src/graphs/graph_factory.py), using the state shapes defined under [src/states/](src/states/).
+
+## Expert AI agents
+
+Each specialty expert loads: a clinical knowledge base from [src/knowledge/](src/knowledge/), the current telemetry snapshot, prior-session retrieval from Chroma, and the patient profile. It then calls Groq (`openai/gpt-oss-120b`, temperature 0.3) and emits a Pydantic-validated JSON response.
+
+| Specialty           | Knowledge file                                                  | Env-var override                        |
+|---------------------|------------------------------------------------------------------|-----------------------------------------|
+| Cardiology          | [src/knowledge/cardiology.md](src/knowledge/cardiology.md)       | `CARDIOLOGY_EXPERT_GROQ_API_KEY`        |
+| Pulmonary           | [src/knowledge/pulmonary.md](src/knowledge/pulmonary.md)         | `PULMONARY_EXPERT_GROQ_API_KEY`         |
+| Neurology           | [src/knowledge/neurology.md](src/knowledge/neurology.md)         | `NEUROLOGY_EXPERT_GROQ_API_KEY`         |
+| Dermatology         | [src/knowledge/dermatology.md](src/knowledge/dermatology.md)     | `DERMATOLOGY_EXPERT_GROQ_API_KEY`       |
+| Gynecology          | [src/knowledge/gynecology.md](src/knowledge/gynecology.md)       | `GYNECOLOGY_EXPERT_GROQ_API_KEY`        |
+| Ocular              | [src/knowledge/ocular.md](src/knowledge/ocular.md)               | `OCULOMETRIC_EXPERT_GROQ_API_KEY`       |
+| General Physician   | [src/knowledge/general_physician.md](src/knowledge/general_physician.md) | `GENERAL_PHYSICIAN_GROQ_API_KEY` |
+
+### Structured output schema
+
+```jsonc
+{
+  "finding":         "string (≥ 300 chars — enforced)",
+  "severity":        "normal | watch | elevated | critical",
+  "severity_score":  0.0,   // 0–10 float
+                            //  0–2 normal, 3–4 watch, 5–7 elevated, 8–10 critical
+  "recommendations": ["string", "..."],
+  "confidence":      0.0    // 0–1
+}
+```
+
+## ML model adapters
+
+Runtime wrappers under [src/ml/](src/ml/) let the cardiology and pulmonary LangGraph nodes **narrate** structured model output instead of classifying from text alone. Every adapter is a singleton with a uniform `is_loaded` / `classify` / `embed` surface, and every adapter gracefully no-ops when weights are absent — the graphs keep running either way.
+
+| Adapter                                                                          | Weights path (relative to `MEDVERSE_MODELS_DIR`) | Graph integration point |
+|----------------------------------------------------------------------------------|--------------------------------------------------|-------------------------|
+| [`ECGFounderAdapter`](src/ml/ecgfounder_adapter.py)                              | `ecg/ecgfounder/weights.pt` + `labels.txt`       | `cardiology_graph` info-retrieval |
+| [`RespiratorySoundClassifier`](src/ml/pulmonary_classifier.py)                   | `pulmonary/icbhi_cnn/weights.pt` + `class_names.json` | `pulmonary_graph` info-retrieval |
+| [`ECGBiometric`](src/biometric/ecg_biometric.py)                                 | `ecg/biometric_siamese/weights.pt`               | (see [ECG biometric identity](#ecg-biometric-identity)) |
+
+### How graphs consume adapter output
+
+`_augment_with_ml_models()` in [src/graphs/graph_factory.py](src/graphs/graph_factory.py) runs after the normal tool pass. When the adapter is loaded **and** the snapshot carries a `waveform` block (enable with `MEDVERSE_INCLUDE_WAVEFORM=true`), it attaches a structured result to `tool_results`:
+
+```jsonc
+// tool_results entry from the cardiology graph
+"ecgfounder_classification": {
+  "label": "Atrial Fibrillation",
+  "auroc": 0.97,
+  "top_k": [{"label": "AF", "prob": 0.91}, ...]
+}
+```
+
+The LLM then narrates this structured classification rather than inferring it from raw signal — a triply-sourced output (signal → classifier → LLM narration) that is clinically defensible.
+
+### Plugging in weights
+
+Each adapter file contains a `_load_weights()` method with a `NotImplementedError` — drop in your PyTorch / TFLite / ONNX load call there, or override the singleton at runtime. See the inline docstrings for the expected I/O shape (1-D ECG window, mel-spectrogram audio window, Siamese anchor embedding).
+
+## Federated learning
+
+Scaffolding under [src/federated/](src/federated/) lets you train shared models across patients while each device's `aegis_local.db` (raw biometrics) **never leaves the device** — only gradient deltas are uploaded.
+
+```bash
+# Install the optional stack
+pip install "flwr>=1.10" "torch>=2.2"
+
+# On the coordinator host
+python -m src.federated.server --rounds 10 --address 0.0.0.0:8080
+
+# On each participating device
+python -m src.federated.client --server-address 10.0.0.4:8080 --patient-id patient_042
+```
+
+- Server uses `FedAvg` with `min_fit_clients=2`, `min_available_clients=2`.
+- Client defines a `TinyArrhythmiaModel` placeholder (`nn.Linear`-based) — swap for your production CNN in [src/federated/client.py](src/federated/client.py).
+- `load_local_training_set(patient_id)` is a stub — wire it to pull labelled ECG windows from the local SQLite.
+
+## ECG biometric identity
+
+Implemented in [src/biometric/ecg_biometric.py](src/biometric/ecg_biometric.py). A Siamese encoder learns each patient's unique cardiac morphology; stored anchor embeddings (persisted in the existing `cardiology_history` Chroma collection under `metadata.type = "biometric_anchor"`) enable:
+
+- **Passive session identification** — the vest recognises the wearer from their ECG, no login step.
+- **Personalised drift monitoring** — deviation from the patient's *own* baseline triggers alerts, not just absolute thresholds.
+- **Cross-patient session hygiene** — if a different person puts on the vest, the biometric mismatch is flagged.
+
+API:
+
+```python
+from src.biometric.ecg_biometric import get_ecg_biometric
+
+bio = get_ecg_biometric()
+if bio.is_loaded:
+    anchor = bio.enroll(patient_id="patient_042", ecg_windows=[...])  # persist anchor
+    match = bio.identify(ecg_window=current, anchors=[("patient_042", anchor)])
+    # match.matched == match.score >= MEDVERSE_BIOMETRIC_THRESHOLD (default 0.75)
+```
+
+Until weights land under `models/ecg/biometric_siamese/weights.pt`, `is_loaded` stays `False` and all public methods return safe sentinels.
+
+## Sensor channel reference
+
+Channels appear in the BLE payload as comma-separated `key:value` pairs and are parsed at [app.py:252](app.py#L252).
+
+| Group     | Keys                                          | Source sensor |
+|-----------|-----------------------------------------------|---------------|
+| PPG       | `IR1`, `Red1`, `IR2`, `Red2`, `IRA`, `RedA`   | MAX30102 × 3 sites |
+| PPG temps | `T1`, `T2`                                    | MAX30102 on-board |
+| Skin temp | `TL`, `TR`, `TC`                              | DS18B20 × 3 (L axilla, R axilla, cervical) |
+| IMU       | `UP`, `UR`, `LP`, `LR`, `SA`, `PP`            | MPU6050 × 2 (upper/lower pitch/roll + spinal angle + poor-posture flag) |
+| GY-87     | `BPR`, `BTP`                                  | BMP180 pressure / temperature |
+| Env       | `EP`, `ET`, `HUM`, `DT`                       | BMP280 + DHT11 |
+| ECG       | `L1`, `L2`, `L3`, `EHR`                       | AD8232 3-lead + on-board HR |
+| Audio     | `ARMS`, `DRMS`                                | I²S acoustic array (analog + digital RMS) |
+
+Fetal payload is JSON (not key:value) — parsed at [app.py:231](app.py#L231): `mode`, `pz[4]`, `kick[4]`, `move[4]`, `mv[2]`, `heart[2]`, `bowel[2]`, `fp[2]`, `cont[2]`.
+
+## Simulation & PK/PD modeling
+
+### Temporal projection
+
+`POST /api/simulation/mode` shifts the live snapshot into projected futures (see [app.py:692](app.py#L692)):
+
+| Mode   | Effect                                                              |
+|--------|---------------------------------------------------------------------|
+| `Live` | Pass-through — no modification                                      |
+| `6h`   | HR − 10 bpm (min 60), cervical 37 °C, contractions cleared          |
+| `12h`  | HR 80, cervical 36.8, single kick                                   |
+| `24h`  | HR 72, cervical 36.6, alternating kicks                             |
+| `2w`   | Spinal angle + 5°, HR 85                                            |
+| `4w`   | Spinal angle + 12°, HR 95, both contractions + 3/4 kicks            |
+
+### Drug injection
+
+`POST /api/simulation/medicate` overlays a **two-compartment Bateman** PK/PD curve on the stream. The effect rises from zero, peaks, then decays — so the simulation actually washes out instead of locking at max effect.
+
+```
+C(t) ∝ (k_abs / (k_abs − k_el)) · (e^−k_el·t − e^−k_abs·t)
+
+Poor CYP2D6 metabolizer → k_el × 0.6   (slower clearance, larger AUC, longer tail)
+Normal metabolizer       → k_el × 1.0
+```
+
+Per-drug constants (see [app.py](app.py)):
+
+| Drug         | k_abs | k_el (Normal) | HR effect                                              | Contraction effect |
+|--------------|-------|---------------|---------------------------------------------------------|--------------------|
+| Labetalol    | 0.4   | 0.25          | `−15 × effect × (dose/100)` bpm                         | —                  |
+| Oxytocin     | 0.8   | 0.45          | `+5 × effect × (dose/100)` bpm                          | Active when `effect × dose/100 > 0.15` |
+
+`effect` is clipped to `[0, 1]` and exposed in the stream at `pharmacology.effect_curve`; the active `k_el` is at `pharmacology.k_el`. Once `sim_time > 3.0` and `effect_curve < 0.005`, the active medication is cleared automatically so a fresh `/api/simulation/medicate` call gives a clean curve.
+
+### Lab-result OCR
+
+`POST /api/upload-lab-results` accepts a PNG/JPG of a lab report and calls Groq `llama-3.2-11b-vision-preview` to extract AST, ALT, and CYP2D6 metabolizer status ([app.py:804](app.py#L804)). If CYP2D6 is not explicitly listed, it is deduced from liver enzymes (AST/ALT > 100 U/L ⇒ `Poor Metabolizer`). The resulting status drives the clearance constant above.
+
+## Web dashboard (frontend/)
+
+**Stack** — Next.js 16.1.7 (App Router, client components), React 19.2.3, TypeScript 5, Tailwind CSS 4, Framer Motion 12, lucide-react, react-markdown 10, Three.js 0.183 with `@react-three/fiber` 9 and `@react-three/drei` 10.
+
+**Scripts** ([frontend/package.json](frontend/package.json)):
+
+```bash
+npm run dev     # next dev, port 3000
+npm run build   # next build
+npm run start   # next start
+npm run lint    # eslint
+```
+
+**Routes** (under [frontend/app/](frontend/app/)):
+
+| Route             | Purpose |
+|-------------------|---------|
+| `/`               | Main dashboard — digital twin, biometric grid, waveforms, expert summaries, simulation controls |
+| `/cardiology`     | Dual-ECG leads I/II/III, PPG, HR, HRV, QRS, PR, cuffless BP, arrhythmia/ST-segment flags |
+| `/obstetrics`     | FHR + CTG, contractions, kicks, maternal HR/temp, Dawes-Redman |
+| `/respiratory`    | Pneumogram, lung-sound I²S stream, RR, SpO₂, tidal volume, COPD/apnea/hypoxia flags |
+| `/neurology`      | Dual-IMU posture, gait symmetry, tremor, fall risk, autonomic HRV LF/HF |
+| `/diagnostics`    | Multi-agent cross-evaluation with per-agent confidence |
+| `/environment`    | BMP280 + DHT11 ambient telemetry; DS18B20 × 3 skin-temp strip |
+| `/settings`       | BLE device info, backend URL, stream rate, alert thresholds, system info |
+| `/history`        | (stub) |
+| `/vest-viewer`    | (stub) |
+
+**Streaming hook** — [frontend/app/hooks/](frontend/app/hooks/) exposes `useVestStream()`, which opens an `EventSource` against `http://localhost:8000/stream`, parses the JSON payload, and auto-reconnects after 3 s on disconnect. State is managed with plain React hooks — no Redux / Zustand / Context provider.
+
+**Digital twin** — a GLTF human skeleton coloured by core temperature, animated by live HR, and annotated with uterine-contraction/fetal-kick overlays; supports Live vs. projected scrubbing via the simulation endpoint.
+
+**Expert chat** — a right-side panel that lets you pick one of seven specialists and converse via text or Web Speech API voice I/O, with streaming markdown replies.
+
+## Mobile app (mobile/aegis)
+
+Flutter 1.0.0+1, Dart SDK `^3.11.0`. Targets Android, iOS, Web, Windows, macOS and Linux.
+
+Dependencies ([mobile/aegis/pubspec.yaml](mobile/aegis/pubspec.yaml)): `provider`, `http`, `google_fonts`, `fl_chart`, `flutter_markdown`, `model_viewer_plus`, `webview_flutter`, `image_picker`.
+
+Screens include Dashboard, Specialists (tabbed cardiology / neurology / obstetrics / respiratory / environment), Digital Twin (`model_viewer_plus`), Diagnostics, Settings. Services — `api_service.dart` and `vest_stream_service.dart` — mirror the web client's SSE/REST patterns.
+
+## Firmware (PlatformIO/)
+
+### Aegis vest — [PlatformIO/vest/](PlatformIO/vest/)
+
+- **Board**: `esp32-s3-devkitc-1`, Arduino framework, 115200 baud.
+- **Libs** ([platformio.ini](PlatformIO/vest/platformio.ini)): `h2zero/NimBLE-Arduino`, `sparkfun/SparkFun MAX3010x Pulse and Proximity Sensor Library`, `milesburton/DallasTemperature`.
+- **BLE name**: `Aegis_SpO2_Live` — characteristic UUID `beb5483e-36e1-4688-b7f5-ea07361b26a8`.
+- Emits the comma-separated key:value payload parsed by the backend.
+- See [PlatformIO/vest/WIRING.md](PlatformIO/vest/WIRING.md) for the full pinout.
+
+### Abdomen / fetal monitor — [PlatformIO/fetal_monitor/](PlatformIO/fetal_monitor/)
+
+- **Board**: `esp32dev`, Arduino framework, partitioned `min_spiffs.csv`, pinned to `COM3` on Windows.
+- **Libs** ([platformio.ini](PlatformIO/fetal_monitor/platformio.ini)): `adafruit/Adafruit ADS1X15`, `adafruit/Adafruit BusIO`, `bblanchon/ArduinoJson`.
+- **BLE name**: `AbdomenMonitor` — characteristic UUID `12345678-1234-1234-1234-123456789ab1`.
+- Emits a JSON payload with `mode`, piezo × 4, kicks × 4, movement × 4, mic × 2, heart tones × 2, bowel × 2, film pressure × 2, contractions × 2.
+
+### Firmware sample-rate architecture
+
+A common confusion: "just change `delay(25)` to `delayMicroseconds(4000)` in `main.cpp`" — **that instruction does not apply to this firmware**. The vest runs a cooperative tick loop driven by `millis()` comparisons, not a single-rate `delay()`. The intervals are declared in [config.h:50-58](PlatformIO/vest/src/config.h#L50):
+
+```cpp
+#define PPG_READ_INTERVAL    25    // 40 Hz  — MAX30102 polling
+#define IMU_READ_INTERVAL    50    // 20 Hz  — MPU6050 pitch/roll
+#define ECG_SAMPLE_INTERVAL  3     // 333 Hz — AD8232 ADC read into ring buffer
+#define ECG_PROCESS_INTERVAL 1000  // 1 Hz   — publishes latest ECG sample to BLE payload
+#define AUDIO_INTERVAL       1000  // 1 Hz   — I²S RMS
+#define TEMP_READ_INTERVAL   5000  // 0.2 Hz — DS18B20 skin temps
+#define ENV_READ_INTERVAL    5000  // 0.2 Hz — BMP280 + DHT11
+```
+
+**ECG is already sampled at 333 Hz** into a 1024-sample ring buffer inside [ECGManager::sample()](PlatformIO/vest/src/ecg/ecg_manager.cpp). The bottleneck is [ECGManager::process()](PlatformIO/vest/src/ecg/ecg_manager.cpp) — it runs every `ECG_PROCESS_INTERVAL` and pulls **one latest sample** into `ecgData.lead1_mv/lead2_mv/lead3_mv`. [BLEManager::transmit()](PlatformIO/vest/src/ble/ble_manager.cpp) then bakes those scalars into each BLE packet. Effective ECG rate delivered to the backend today: **~1 Hz**.
+
+Two upgrade paths:
+
+| Fix | Edit | Delivered ECG rate | Cost | When to pick it |
+|-----|------|--------------------|------|-----------------|
+| Minimal | `ECG_PROCESS_INTERVAL 1000 → 4` in [config.h](PlatformIO/vest/src/config.h) | ~30–50 Hz (capped by NimBLE notify throughput on ESP32, not by your config) | 1 line | Visual QRS, posture-aware cardiology demo, PR/QT eyeballing |
+| Proper  | Batch N ECG samples per BLE packet (firmware `transmit()` + [app.py](app.py) parser) | True 250 Hz at the backend | ~30-40 firmware + ~15 parser lines | ECGFounder classification, ST-segment analysis, HRV precision |
+
+Whichever you pick, the backend side is already ready — `MEDVERSE_SAMPLE_RATE=250` reshapes every ring buffer (`BUFFER_SIZE`, `SPO2_WINDOW`, `BR_WINDOW`) on the next import.
+
+### Hardware matrix
+
+| Device           | MCU         | Sensors                                                            | BLE name          |
+|------------------|-------------|--------------------------------------------------------------------|-------------------|
+| Aegis Vest       | ESP32-S3    | MAX30102 × 3, MPU6050 × 2 (in GY-87 + dedicated IMU), DS18B20 × 3, AD8232 3-lead, BMP180, BMP280, DHT11, I²S mic | `Aegis_SpO2_Live` |
+| Abdomen Monitor  | ESP32 (dev) | Piezo × 4, MEMS mic, flex film, ADS1115 16-bit ADC                 | `AbdomenMonitor`  |
+
+## ML pipelines (models/)
+
+Training-time artefacts live under [models/](models/) — data schema, notebooks, and the eventual weight files consumed by the runtime adapters in [src/ml/](src/ml/) and [src/biometric/](src/biometric/):
+
+| Path                               | Consumed by                                                              | Purpose |
+|------------------------------------|---------------------------------------------------------------------------|---------|
+| `models/ecg/ecgfounder/`           | [`ECGFounderAdapter`](src/ml/ecgfounder_adapter.py)                      | Multi-label cardiac diagnosis (150 labels, AUROC >0.95 on 80) |
+| `models/ecg/biometric_siamese/`    | [`ECGBiometric`](src/biometric/ecg_biometric.py)                         | Personalised ECG identity |
+| `models/pulmonary/icbhi_cnn/`      | [`RespiratorySoundClassifier`](src/ml/pulmonary_classifier.py)           | 4-class respiratory sound (normal / wheeze / crackle / stridor) |
+| `models/fetal/`                    | (future) fetal heart-rate extraction                                     | Reserved |
+| `models/skin/`                     | (future) dermatology classifier                                          | Reserved |
+
+Until weight files land, the runtime adapters report `is_loaded = False` and the graphs fall back to LLM-only assessment. See each adapter's docstring for the expected architecture + input shape.
+
+## Development notes
+
+- **Mock mode** is automatic — if `bleak` cannot find either BLE device within 10 s, `start_mock_data()` takes over at 40 Hz.
+- **CORS** is driven by `MEDVERSE_CORS_ORIGINS` (default `localhost:3000,127.0.0.1:3000`). Add entries there before deploying behind a different origin.
+- **Auth** is off by default (`MEDVERSE_AUTH_ENABLED=false`); every FHIR endpoint already has `Depends(require_user)` attached so flipping the flag is all it takes to protect them.
+- **Embedding dimensionality** differs between BioLORD (768) and MiniLM (384). The Chroma collection name includes a suffix derived from the active model, so switching models creates a fresh collection instead of corrupting the existing one — see [src/utils/vector_store.py](src/utils/vector_store.py).
+- **Waveform in SSE** — `MEDVERSE_INCLUDE_WAVEFORM=true` inflates each snapshot by roughly 40× (800 samples × 6 channels). Only turn it on when the ML adapters are loaded and need the raw window.
+- **Buffer sizing** — all channels keep the last 800 samples (~20 s at 40 Hz). SpO₂ uses the last 160 (`SPO2_WINDOW`); BR uses the last 400 (`BR_WINDOW`).
+- **Chroma** gracefully degrades — if embeddings cannot be loaded, interpretations still flow but without prior-session context.
+- **LangGraph CLI** — `langgraph dev` will pick up [langgraph.json](langgraph.json) and boot an in-memory checkpoint store; state is persisted to `.langgraph_api/`.
+- **Frontend-backend port contract** is hard-coded (`:8000` in the frontend, `:3000` for the dashboard). Change both sides together if you move them.
+
+## Troubleshooting
+
+| Symptom                                                 | Likely cause / fix |
+|---------------------------------------------------------|--------------------|
+| Backend logs `[WARN] Device '…' not found.`             | Expected if hardware is off — you'll get mock data. |
+| Frontend stuck at "connecting" / empty graphs           | Backend isn't running, or your dev origin isn't in `MEDVERSE_CORS_ORIGINS` — confirm `curl http://localhost:8000/api/status`. |
+| `401 Unauthorized` from every `/api/**` call            | `MEDVERSE_AUTH_ENABLED=true` is set. Either flip it to `false` or fetch a token via `POST /api/auth/login`. |
+| Groq 429 / rate-limit errors                            | Give each specialty its own key in `.env` (see [Environment variables](#environment-variables)). |
+| `fetal_connected` stays `false`                         | AbdomenMonitor not advertising, or COM3 is wrong for your setup — edit [PlatformIO/fetal_monitor/platformio.ini](PlatformIO/fetal_monitor/platformio.ini). |
+| `PATIENT_CYP2D6_STATUS` never updates                   | `/api/upload-lab-results` falls back to `Poor Metabolizer` when the upload is not a PNG/JPG or the vision call fails. |
+| `bleak` import fails                                    | `pip install bleak` — mock mode also kicks in automatically. |
+| `/api/history` returns an empty list                    | Stream data for a minute or two so SQLite accumulates rows. On Timescale, check that `CREATE EXTENSION timescaledb` ran and `alembic upgrade head` completed. |
+| History chart flatlines at 1 m resolution               | Not enough rows in the last minute — switch to `1h`. |
+| Sample rate mismatch (backend says 40, firmware on 250) | Read [Firmware sample-rate architecture](#firmware-sample-rate-architecture) first — the edit is in [config.h](PlatformIO/vest/src/config.h), not a `delay(25)` in `main.cpp`. After flashing the new firmware, set `MEDVERSE_SAMPLE_RATE=250` in `.env`. The active rate appears in `GET /api/status` so the frontend can verify sync. |
+| ECG window filled with repeating values                 | `ECG_PROCESS_INTERVAL` in firmware still at `1000` — the backend is receiving one fresh ECG scalar per second. Lower the interval (see [Firmware sample-rate architecture](#firmware-sample-rate-architecture)) or adopt the batched-payload path. |
+| Flutter `invalid credentials` on login                  | Backend auth is off by default — any creds should succeed. If it still fails, confirm `ApiConfig.baseUrl` resolves (Android emulator auto-maps `localhost` → `10.0.2.2`). |
+| Mobile login screen stays visible after valid login     | `AuthService.load()` may have thrown — check debug console. `flutter_secure_storage` needs MainActivity to use `FlutterFragmentActivity` on Android API < 23. |
+| FHIR endpoints return dicts, not validated resources    | `pip install fhir.resources>=7.0.0` — the module falls back to raw dicts when it's absent. |
+| ML adapters log "weights not found"                     | Expected until you train + drop files under `MEDVERSE_MODELS_DIR`. Graphs fall back to LLM-only. |
+| Chroma errors about dimension mismatch after model swap | Expected once — the new embedder creates a fresh collection. Old vectors persist under their old suffix until you delete `chroma_data/<key>_<old-model>/`. |
+| BioLORD first load is slow                              | The first call downloads ~1.5 GB of weights to the HF cache. Set `MEDVERSE_EMBEDDING_MODEL=sentence-transformers/all-MiniLM-L6-v2` to stay on the lighter model. |
+| `alembic upgrade head` fails with "extension not found" | Run `CREATE EXTENSION IF NOT EXISTS timescaledb;` in your Postgres before applying. |
+
+## Security notice
+
+MedVerse ships **security-capable but not security-mandatory** — auth is off by default so newcomers can run it in one step, and every security surface is a single env flip away from production posture:
+
+- **Auth**: set `MEDVERSE_AUTH_ENABLED=true` and rotate `MEDVERSE_JWT_SECRET` (the committed default `dev-insecure-change-me` is intentionally obvious). Every `/api/**` route already has `Depends(require_user)` attached, and `/stream` enforces `?token=` when auth is on.
+- **CORS**: allowlist is driven by `MEDVERSE_CORS_ORIGINS` (default: `localhost:3000` only). Never set it to `*` on a deployed backend.
+- **Groq keys**: the committed [.env](.env) holds real-looking keys from earlier iterations. **Before sharing this repo** — rotate every `gsk_…` key at https://console.groq.com, ensure [.env](.env) stays in [.gitignore](.gitignore), and scrub Git history with `git filter-repo` or BFG.
+- **Frontend JWT storage**: `localStorage.medverse_token`. Swap for HttpOnly cookies before any production deployment that touches real patient data.
+- **Mobile JWT storage**: `flutter_secure_storage` (Keychain on iOS, EncryptedSharedPreferences on Android) — already wired.
+
+## Roadmap
+
+### Done
+
+- ✅ Two-compartment Bateman PK/PD with CYP2D6-aware clearance.
+- ✅ IMU-derived biomarkers (tremor, gait, POTS, activity state).
+- ✅ FHIR R4 `Observation` / `Bundle` / `DiagnosticReport` / `Patient` / `Device` endpoints.
+- ✅ JWT bearer auth + env-driven CORS allowlist (feature-flagged off by default).
+- ✅ Env-driven sample rate + derived buffer sizes (firmware-ready for 250 Hz).
+- ✅ Dawes-Redman CTG surrogate with 30-minute ring buffer.
+- ✅ `patient_id` propagation — SSE query param, JWT `sub`, DB rows, `/api/patient/active` endpoint.
+- ✅ SQLite / TimescaleDB conditional writer — flip by setting `MEDVERSE_DB_URL`.
+- ✅ `/api/history` endpoint (SQLite Python-bucketed or Timescale continuous aggregate).
+- ✅ Frontend `NEXT_PUBLIC_API_URL` + shared `lib/api.ts` client + bearer-token SSE.
+- ✅ `/login` page + recharts-powered `/history` dashboard.
+- ✅ Flutter `AuthService` + login gate + `flutter_secure_storage` + centralised `ApiConfig`.
+- ✅ Biomedical RAG — default embedding swapped to `FremyCompany/BioLORD-2023`.
+- ✅ Runtime adapters scaffolded — ECGFounder, respiratory CNN, ECG biometric (weights pluggable).
+- ✅ Federated-learning client wired to real SQLite ECG windows + 3-layer 1-D CNN.
+- ✅ TimescaleDB migration under `alembic/` (hypertables + 1m/1h continuous aggregates).
+- ✅ Safe `.env.example` + `frontend/.env.example`; `.env`, local DBs, ML weights gitignored.
+
+### User's to-do (not something I can do)
+
+- **Firmware — ECG rate upgrade** (see [Firmware sample-rate architecture](#firmware-sample-rate-architecture) for the full picture):
+  - **Minimal fix**: in [PlatformIO/vest/src/config.h](PlatformIO/vest/src/config.h) change `ECG_PROCESS_INTERVAL` from `1000` to `4` (publishes the latest ECG sample at 250 Hz instead of 1 Hz), re-flash, then set `MEDVERSE_SAMPLE_RATE=250`. Note: NimBLE notify throughput still caps the *delivered* rate around 30–50 Hz.
+  - **Proper fix**: batch 25 ECG samples per BLE packet in [ble_manager.cpp](PlatformIO/vest/src/ble/ble_manager.cpp) + extend the backend parser in [app.py](app.py) to expand the array. This is needed for ECGFounder-grade analysis — say the word and I'll implement both sides.
+- **Model training**: populate `models/ecg/ecgfounder/weights.pt`, `models/pulmonary/icbhi_cnn/weights.pt`, `models/ecg/biometric_siamese/weights.pt`.
+- **Secrets**: rotate the committed `gsk_…` Groq keys and scrub Git history.
+- **Clinical depth**: have a cardiologist / OB-GYN review [src/knowledge/*.md](src/knowledge/).
+- **POTS calibration**: empirical threshold validation against a real sit-to-stand trial.
+- **Deps**: `pip install -r requirements.txt`, `cd frontend && npm install`, `cd mobile/aegis && flutter pub get` — picks up `psycopg2-binary`, `recharts`, `flutter_secure_storage`.
+
+## License
+
+**TODO** — add a `LICENSE` file. The project does not currently declare a license.

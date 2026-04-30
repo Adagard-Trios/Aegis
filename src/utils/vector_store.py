@@ -20,27 +20,62 @@ logger = logging.getLogger(__name__)
 
 _EMBEDDINGS_AVAILABLE = False
 _embeddings = None
+_embedding_model_name: Optional[str] = None
 _collections: Dict[str, Any] = {}
 _PERSIST_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "chroma_data")
 
 
+def _embedding_suffix() -> str:
+    """Short, filesystem-safe tag for the active embedding model — used to
+    segregate Chroma collections across model versions (MiniLM vs. BioLORD
+    vectors have different dimensionalities)."""
+    if not _embedding_model_name:
+        return "default"
+    return _embedding_model_name.split("/")[-1].lower().replace("-", "_")
+
+
 def _get_embeddings():
+    """
+    Load the sentence-embedding model for the Chroma RAG.
+
+    Model selection (in order of preference):
+      1. MEDVERSE_EMBEDDING_MODEL env var, if set.
+      2. `FremyCompany/BioLORD-2023` — biomedical-domain encoder, materially
+         better recall on clinical text than a general-purpose model.
+      3. Fallback: `all-MiniLM-L6-v2` — the original general-purpose encoder;
+         used if BioLORD fails to load (e.g. no network on first run).
+    """
     global _embeddings, _EMBEDDINGS_AVAILABLE
     if _embeddings is not None:
         return _embeddings
+
+    primary = os.environ.get("MEDVERSE_EMBEDDING_MODEL", "FremyCompany/BioLORD-2023")
+    fallback = "sentence-transformers/all-MiniLM-L6-v2"
+
     try:
         from langchain_huggingface import HuggingFaceEmbeddings
-        _embeddings = HuggingFaceEmbeddings(
-            model_name="all-MiniLM-L6-v2",
-            model_kwargs={"device": "cpu"},
-            encode_kwargs={"normalize_embeddings": True},
-        )
-        _EMBEDDINGS_AVAILABLE = True
-        return _embeddings
     except Exception as e:
-        logger.warning(f"HuggingFace embeddings not available: {e}. Vector store disabled.")
+        logger.warning(f"langchain_huggingface not available: {e}. Vector store disabled.")
         _EMBEDDINGS_AVAILABLE = False
         return None
+
+    global _embedding_model_name
+    for model_name in (primary, fallback):
+        try:
+            _embeddings = HuggingFaceEmbeddings(
+                model_name=model_name,
+                model_kwargs={"device": "cpu"},
+                encode_kwargs={"normalize_embeddings": True},
+            )
+            _embedding_model_name = model_name
+            _EMBEDDINGS_AVAILABLE = True
+            logger.info(f"Vector store using embedding model: {model_name}")
+            return _embeddings
+        except Exception as e:
+            logger.warning(f"Embedding model '{model_name}' failed to load: {e}")
+
+    _EMBEDDINGS_AVAILABLE = False
+    return None
 
 
 def _get_collection(specialty: str):
@@ -50,19 +85,21 @@ def _get_collection(specialty: str):
         return None
 
     key = specialty.lower().replace(" ", "_").replace("/", "_")
-    if key not in _collections:
+    suffix = _embedding_suffix()
+    cache_key = f"{key}::{suffix}"
+    if cache_key not in _collections:
         try:
             from langchain_chroma import Chroma
-            collection_name = f"{key}_history"
-            _collections[key] = Chroma(
+            collection_name = f"{key}_history_{suffix}"
+            _collections[cache_key] = Chroma(
                 collection_name=collection_name,
                 embedding_function=embeddings,
-                persist_directory=os.path.join(_PERSIST_DIR, key),
+                persist_directory=os.path.join(_PERSIST_DIR, f"{key}_{suffix}"),
             )
         except Exception as e:
             logger.warning(f"Failed to create Chroma collection for {specialty}: {e}")
             return None
-    return _collections[key]
+    return _collections[cache_key]
 
 
 # ─── Public API ──────────────────────────────────────────────────────────────

@@ -5,6 +5,7 @@ import { Canvas } from '@react-three/fiber';
 import { OrbitControls, Environment, ContactShadows, Stars, Sparkles } from '@react-three/drei';
 import MedicalModel from '../digital-twin/MedicalModel';
 import { useVestStream, TelemetryData } from '../hooks/useVestStream';
+import { apiPost } from '../lib/api';
 
 type SimulationMode = 'Live' | '6h' | '12h' | '24h' | '2w' | '4w';
 
@@ -15,11 +16,7 @@ export function MedVerseDigitalTwin() {
   const handleSimulationModeChange = async (mode: SimulationMode) => {
     setSimulationMode(mode);
     try {
-      await fetch('http://localhost:8000/api/simulation/mode', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mode })
-      });
+      await apiPost('/api/simulation/mode', { mode });
     } catch (e) {
       console.error('Failed to sync simulation mode to backend', e);
     }

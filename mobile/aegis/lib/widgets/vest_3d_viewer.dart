@@ -1,8 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:webview_flutter/webview_flutter.dart';
-// ignore: depend_on_referenced_packages
-import 'package:webview_flutter_android/webview_flutter_android.dart';
-import 'dart:io' show Platform;
+import '../services/api_config.dart';
 import '../theme.dart';
 
 class Vest3DViewer extends StatefulWidget {
@@ -18,10 +16,7 @@ class _Vest3DViewerState extends State<Vest3DViewer> {
   @override
   void initState() {
     super.initState();
-    String url = 'http://localhost:3000/vest-viewer';
-    try {
-      if (Platform.isAndroid) url = 'http://10.0.2.2:3000/vest-viewer';
-    } catch (_) {}
+    final url = '${ApiConfig.frontendUrl}/vest-viewer';
 
     _controller = WebViewController()
       ..setJavaScriptMode(JavaScriptMode.unrestricted)

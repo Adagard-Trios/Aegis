@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 import '../models/vest_data_model.dart';
+import '../services/api_config.dart';
 import '../widgets/simulation_controls_panel.dart';
 import '../widgets/biometric_card.dart';
 import '../theme.dart';
@@ -22,7 +23,7 @@ class _DigitalTwinScreenState extends State<DigitalTwinScreen> {
     _controller = WebViewController()
       ..setJavaScriptMode(JavaScriptMode.unrestricted)
       ..setBackgroundColor(MedVerseTheme.background)
-      ..loadRequest(Uri.parse('http://10.0.2.2:3000/vest-viewer')); 
+      ..loadRequest(Uri.parse('${ApiConfig.frontendUrl}/vest-viewer'));
   }
 
   @override

@@ -3,11 +3,13 @@ import 'dart:convert';
 import 'dart:math';
 import 'package:http/http.dart' as http;
 import 'package:flutter/foundation.dart';
-import 'dart:io' show Platform;
 import '../models/vest_data_model.dart';
+import 'api_config.dart';
+import 'auth_service.dart';
 
 class VestStreamService {
   final VestDataModel model;
+  final AuthService? auth;
   http.Client? _client;
   bool _isListening = false;
   int _reconnectAttempts = 0;
@@ -17,16 +19,9 @@ class VestStreamService {
   Timer? _mockTimer;
   double _phase = 0;
 
-  VestStreamService({required this.model});
+  VestStreamService({required this.model, this.auth});
 
-  // Automatically switches to 10.0.2.2 for Android emulator localhost translation if live Mode
-  String get baseUrl {
-    if (kIsWeb) return 'http://localhost:8000';
-    try {
-      if (Platform.isAndroid) return 'http://10.0.2.2:8000';
-    } catch (_) {}
-    return 'http://localhost:8000';
-  }
+  String get baseUrl => ApiConfig.baseUrl;
 
   void startStream() async {
     if (_isListening) return;
@@ -107,7 +102,10 @@ class VestStreamService {
       model.updateConnectionStatus(false, 'Connecting...');
       try {
         _client = http.Client();
-        final request = http.Request('GET', Uri.parse('$baseUrl/stream'));
+        final uri = Uri.parse('$baseUrl/stream');
+        final streamUrl = auth != null ? auth!.appendToken(uri) : uri.toString();
+        final request = http.Request('GET', Uri.parse(streamUrl));
+        if (auth != null) request.headers.addAll(auth!.authHeaders(extra: {}));
         final response = await _client!.send(request);
 
         if (response.statusCode == 200) {

@@ -14,6 +14,9 @@ import 'screens/general_physician_screen.dart';
 import 'screens/digital_twin_screen.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:http/http.dart' as http;
+import 'package:provider/provider.dart';
+import 'services/api_config.dart';
+import 'services/auth_service.dart';
 class MainLayout extends StatefulWidget {
   const MainLayout({super.key});
 
@@ -68,32 +71,36 @@ class _MainLayoutState extends State<MainLayout> {
   }
 
   Future<void> _uploadLabResult() async {
+    // Capture context-dependent handles before any async gap.
+    final auth = context.read<AuthService>();
+    final messenger = ScaffoldMessenger.of(context);
+
     final ImagePicker picker = ImagePicker();
     final XFile? image = await picker.pickImage(source: ImageSource.gallery);
-    
+
     if (image != null) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Processing Lab Results via MedVerse AI...')),
-        );
-      }
-      
+      messenger.showSnackBar(
+        const SnackBar(content: Text('Processing Lab Results via MedVerse AI...')),
+      );
+
       try {
-        var request = http.MultipartRequest('POST', Uri.parse('http://10.0.2.2:8000/api/upload-lab-results'));
+        var request = http.MultipartRequest(
+          'POST',
+          Uri.parse('${ApiConfig.baseUrl}/api/upload-lab-results'),
+        );
+        request.headers.addAll(auth.authHeaders());
         request.files.add(await http.MultipartFile.fromPath('file', image.path));
         var response = await request.send();
 
-        if (response.statusCode == 200 && mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
+        if (response.statusCode == 200) {
+          messenger.showSnackBar(
             const SnackBar(content: Text('Lab Results Processed & Pharmacological Profile Updated!')),
           );
         }
       } catch (e) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Upload failed: $e')),
-          );
-        }
+        messenger.showSnackBar(
+          SnackBar(content: Text('Upload failed: $e')),
+        );
       }
     }
   }

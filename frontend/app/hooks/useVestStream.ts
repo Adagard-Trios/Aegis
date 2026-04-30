@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef, useCallback } from "react";
+import { buildStreamUrl } from "../lib/api";
 
 export interface TelemetryData {
   timestamp: number;
@@ -75,10 +76,25 @@ export interface TelemetryData {
     dose: number;
     sim_time: number;
     clearance_model: string;
+    effect_curve?: number;
+    k_el?: number;
   };
+  imu_derived?: {
+    tremor: { band_power: number; total_power: number; band_ratio: number; tremor_flag: boolean };
+    gait: { stride_count: number; mean_stride_s: number; stride_cv: number; asymmetry_flag: boolean };
+    pots: { hr_jump: number; angle_delta: number; pots_flag: boolean };
+    activity_state: "rest" | "walking" | "running" | "unknown";
+  };
+  waveform?: {
+    fs: number;
+    ecg_lead1: number[];
+    ecg_lead2: number[];
+    ecg_lead3: number[];
+    ppg_ira: number[];
+    ppg_reda: number[];
+    audio: number[];
+  } | null;
 }
-
-const STREAM_URL = "http://localhost:8000/stream";
 
 export function useVestStream() {
   const [data, setData] = useState<TelemetryData | null>(null);
@@ -89,7 +105,7 @@ export function useVestStream() {
 
   const connect = useCallback(() => {
     try {
-      const es = new EventSource(STREAM_URL);
+      const es = new EventSource(buildStreamUrl("/stream"));
       eventSourceRef.current = es;
 
       es.onopen = () => {

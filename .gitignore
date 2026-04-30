@@ -9,6 +9,20 @@ wheels/
 # Virtual environments
 .venv
 .env
+.env.local
 .langgraph_api
 
 chroma_data
+
+# Local databases & model weights
+aegis_local.db
+aegis_local.db-journal
+aegis_local.db-wal
+aegis_local.db-shm
+models/**/*.pt
+models/**/*.pth
+models/**/*.onnx
+models/**/*.tflite
+
+# Alembic-managed Postgres / Timescale credentials
+alembic.local.ini

@@ -10,17 +10,45 @@ import math
 import time
 import threading
 from collections import deque
-from typing import AsyncGenerator
+from typing import AsyncGenerator, Optional
 from contextlib import asynccontextmanager
+
+# Load .env before anything else reads os.environ — CORS allowlist, auth
+# feature flag, waveform flag, and embedding model are all env-driven.
+from dotenv import load_dotenv
+load_dotenv()
 
 import numpy as np
 from scipy.signal import butter, filtfilt, find_peaks
-from fastapi import FastAPI, UploadFile, File
+from fastapi import FastAPI, UploadFile, File, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from src.utils.db import init_db, insert_telemetry, get_latest_telemetry, get_latest_interpretations
+from src.utils.db import (
+    init_db,
+    insert_telemetry,
+    get_latest_telemetry,
+    get_latest_interpretations,
+    get_history,
+    DEFAULT_PATIENT_ID,
+)
+from src.utils.imu_features import build_imu_derived_block
+from src.utils.ctg_dawes_redman import ingest_fhr, get_ctg_analysis
+from src.utils.fhir import (
+    snapshot_to_observations,
+    snapshot_to_bundle,
+    expert_to_diagnostic_report,
+    patient_resource,
+    device_resource,
+)
+from src.utils.auth import (
+    auth_enabled,
+    cors_origins,
+    create_access_token,
+    require_user,
+    verify_dev_credentials,
+)
 
 # =============================================================
 # CONFIGURATION
@@ -29,12 +57,22 @@ VEST_DEVICE_NAME = "Aegis_SpO2_Live"
 FETAL_DEVICE_NAME = "AbdomenMonitor"
 VEST_CHAR_UUID = "beb5483e-36e1-4688-b7f5-ea07361b26a8"
 FETAL_CHAR_UUID = "12345678-1234-1234-1234-123456789ab1"
-SAMPLE_RATE = 40
-BUFFER_SIZE = 800
-SPO2_WINDOW = 160
-BR_WINDOW = 400
+
+# Sample rate matches the vest firmware's BLE tx cadence. Flash the vest
+# with `delayMicroseconds(4000)` to run at 250 Hz, then set
+# MEDVERSE_SAMPLE_RATE=250 in .env — buffer windows auto-derive below.
+import os as _os_sr
+SAMPLE_RATE = int(_os_sr.environ.get("MEDVERSE_SAMPLE_RATE", "40"))
+BUFFER_SIZE = SAMPLE_RATE * 20   # ~20 s rolling window
+SPO2_WINDOW = SAMPLE_RATE * 4    #  4 s for SpO2 ratio
+BR_WINDOW = SAMPLE_RATE * 10     # 10 s for breathing-rate
 
 SIMULATION_MODE_GLOBAL = "Live"
+
+# Single-device deployment writes every row under ACTIVE_PATIENT_ID.
+# Reads can override via ?patient_id=… query param (or JWT sub claim
+# when auth is enabled). Swap the active patient via POST /api/patient/active.
+ACTIVE_PATIENT_ID = DEFAULT_PATIENT_ID
 
 data_lock = threading.Lock()
 
@@ -558,11 +596,70 @@ def _mock_data_loop():
 # SNAPSHOT BUILDER
 # =============================================================
 
+def _estimate_fhr_bpm() -> Optional[float]:
+    """
+    Derive a one-off fetal-HR estimate (bpm) from the piezo buffer.
+
+    Heuristic: count positive zero-crossings of the demeaned piezo signal
+    over the last ~8 s and convert to bpm. Falls back to a maternal-HR
+    offset (maternal + 65 bpm, clipped to physiologic range) so the
+    Dawes-Redman analyzer has a continuous stream in demos where the
+    AbdomenMonitor is absent. Returns None if nothing usable.
+    """
+    import numpy as _np
+    try:
+        if f_pz_data and len(f_pz_data) >= SAMPLE_RATE * 8:
+            window = [row[0] if row else 0.0 for row in list(f_pz_data)[-SAMPLE_RATE * 8:]]
+            arr = _np.asarray(window, dtype=float)
+            arr = arr - _np.mean(arr)
+            crossings = int(_np.sum((arr[:-1] < 0) & (arr[1:] >= 0)))
+            if crossings >= 2:
+                bpm = crossings * 60.0 / 8.0
+                if 60 <= bpm <= 220:
+                    return bpm
+    except Exception:
+        pass
+    try:
+        if hr_data and hr_data[-1]:
+            mom = float(hr_data[-1])
+            if mom > 0:
+                return max(110.0, min(165.0, mom + 65.0))
+    except Exception:
+        pass
+    return None
+
+
 def build_telemetry_snapshot() -> dict:
     """Build a JSON-serializable snapshot of all current telemetry data."""
+    # Feed the Dawes-Redman analyzer outside data_lock — the analyzer has
+    # its own lock and only reads its internal state.
+    try:
+        ingest_fhr(_estimate_fhr_bpm())
+    except Exception:
+        pass
+
     with data_lock:
         last_sa = sa_data[-1] if sa_data else 0
         last_pi = pi_data[-1] if pi_data else 0
+        # Optional raw waveform — enabled only when MEDVERSE_INCLUDE_WAVEFORM=true,
+        # because shipping ~800 samples per channel per snapshot is heavy over SSE.
+        # When enabled, LangGraph specialty nodes can feed the buffers into
+        # ECGFounder / respiratory CNN adapters.
+        import os as _os
+        include_wave = _os.environ.get("MEDVERSE_INCLUDE_WAVEFORM", "false").lower() in ("1", "true", "yes")
+        waveform_block = (
+            {
+                "fs": SAMPLE_RATE,
+                "ecg_lead1": [round(v, 3) for v in list(ecg_l1_data)],
+                "ecg_lead2": [round(v, 3) for v in list(ecg_l2_data)],
+                "ecg_lead3": [round(v, 3) for v in list(ecg_l3_data)],
+                "ppg_ira": [round(v, 1) for v in list(ira_data)],
+                "ppg_reda": [round(v, 1) for v in list(reda_data)],
+                "audio": [round(v, 1) for v in list(audio_a_data)],
+            }
+            if include_wave
+            else None
+        )
         return {
             "timestamp": time_counter,
             "ppg": {
@@ -630,13 +727,24 @@ def build_telemetry_snapshot() -> dict:
                 "bowel_sounds": [bool(b) for b in f_bowel_data[-1]] if f_bowel_data else [False]*2,
                 "film_pressure": f_fp_data[-1] if f_fp_data else [0.0, 0.0],
                 "contractions": [bool(c) for c in f_cont_data[-1]] if f_cont_data else [False]*2,
+                "dawes_redman": get_ctg_analysis(),
             },
             "pharmacology": {
                 "active_medication": globals().get('SIMULATED_MEDICATION', None),
                 "dose": globals().get('SIMULATED_MEDICATION_DOSE', 0.0),
                 "sim_time": globals().get('MEDICATION_SIM_TIME', 0.0),
                 "clearance_model": globals().get('PATIENT_CYP2D6_STATUS', "Normal Metabolizer")
-            }
+            },
+            "imu_derived": build_imu_derived_block(
+                up_buf=up_data,
+                ur_buf=ur_data,
+                lp_buf=lp_data,
+                lr_buf=lr_data,
+                sa_buf=sa_data,
+                hr_buf=hr_data,
+                fs=SAMPLE_RATE,
+            ),
+            "waveform": waveform_block,
         }
 
 
@@ -657,13 +765,37 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Aegis Vest Telemetry API", version="1.0.0", lifespan=lifespan)
 
+_cors_origins = cors_origins()
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+
+@app.post("/api/auth/login")
+async def auth_login(req: LoginRequest):
+    """Dev login — exchanges username/password for a signed JWT."""
+    if not verify_dev_credentials(req.username, req.password):
+        from fastapi import HTTPException, status as _status
+        raise HTTPException(status_code=_status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
+    return {
+        "access_token": create_access_token(subject=req.username),
+        "token_type": "bearer",
+        "auth_enabled": auth_enabled(),
+    }
+
+
+@app.get("/api/auth/me")
+async def auth_me(user=Depends(require_user)):
+    return {"user": user, "auth_enabled": auth_enabled()}
 
 
 @app.get("/api/status")
@@ -682,8 +814,30 @@ async def get_status():
 
 
 @app.get("/stream")
-async def stream_telemetry():
-    """SSE endpoint — continuously streams telemetry as JSON events."""
+async def stream_telemetry(token: Optional[str] = None, patient_id: Optional[str] = None):
+    """
+    SSE endpoint — continuously streams telemetry as JSON events.
+
+    EventSource cannot attach Authorization headers, so when
+    MEDVERSE_AUTH_ENABLED=true the browser must pass the JWT via
+    `?token=…`. `?patient_id=…` is honored on read-only endpoints too.
+    """
+    # When auth is enabled, require a valid token via query string.
+    if auth_enabled():
+        from src.utils.auth import _decode  # lightweight local import
+        from fastapi import HTTPException, status as _status
+        if not token:
+            raise HTTPException(
+                status_code=_status.HTTP_401_UNAUTHORIZED,
+                detail="Missing ?token= for SSE",
+            )
+        try:
+            _decode(token)
+        except Exception as e:
+            raise HTTPException(
+                status_code=_status.HTTP_401_UNAUTHORIZED,
+                detail=f"Invalid SSE token: {e}",
+            )
 
     async def event_generator() -> AsyncGenerator[str, None]:
         while True:
@@ -711,23 +865,44 @@ async def stream_telemetry():
                     snapshot['fetal']['contractions'] = [True, True]
                     snapshot['fetal']['kicks'] = [True, True, True, False]
 
-            # Pharmacokinetic / Pharmacodynamic overlay
+            # Pharmacokinetic / Pharmacodynamic overlay — two-compartment Bateman curve.
+            # C(t) ∝ (k_abs / (k_abs − k_el)) · (e^−k_el·t − e^−k_abs·t)
+            # Poor CYP2D6 metabolizers have slower elimination (larger AUC, longer tail).
             global MEDICATION_SIM_TIME, SIMULATED_MEDICATION, SIMULATED_MEDICATION_DOSE, PATIENT_CYP2D6_STATUS
             if SIMULATED_MEDICATION:
                 MEDICATION_SIM_TIME += 0.1
-                
-                # Slower clearance if poor metabolizer
-                clearance_k = 0.1 if PATIENT_CYP2D6_STATUS == "Poor Metabolizer" else 0.2
-                
-                # Example mathematically smoothed effect using exponential bounds 
-                # E(t) = Emax * (1 - e^-kt)
-                effect_curve = 1 - math.exp(-clearance_k * MEDICATION_SIM_TIME)
-                
-                if "labetalol" in SIMULATED_MEDICATION.lower():
-                    snapshot['vitals']['heart_rate'] -= int(15 * effect_curve * (SIMULATED_MEDICATION_DOSE/100))
-                elif "oxytocin" in SIMULATED_MEDICATION.lower():
-                    snapshot['fetal']['contractions'] = [True, True]
-                    snapshot['vitals']['heart_rate'] += int(5 * effect_curve)
+
+                drug = SIMULATED_MEDICATION.lower()
+                if "oxytocin" in drug:
+                    k_abs, k_el_normal = 0.8, 0.45
+                else:
+                    k_abs, k_el_normal = 0.4, 0.25
+                k_el = k_el_normal * (0.6 if PATIENT_CYP2D6_STATUS == "Poor Metabolizer" else 1.0)
+
+                if abs(k_abs - k_el) > 1e-6:
+                    effect_curve = (k_abs / (k_abs - k_el)) * (
+                        math.exp(-k_el * MEDICATION_SIM_TIME)
+                        - math.exp(-k_abs * MEDICATION_SIM_TIME)
+                    )
+                else:
+                    effect_curve = k_abs * MEDICATION_SIM_TIME * math.exp(-k_abs * MEDICATION_SIM_TIME)
+                effect_curve = max(0.0, min(1.0, effect_curve))
+
+                dose_factor = SIMULATED_MEDICATION_DOSE / 100.0
+                if "labetalol" in drug:
+                    snapshot['vitals']['heart_rate'] -= int(15 * effect_curve * dose_factor)
+                elif "oxytocin" in drug:
+                    contraction_active = effect_curve * dose_factor > 0.15
+                    snapshot['fetal']['contractions'] = [contraction_active, contraction_active]
+                    snapshot['vitals']['heart_rate'] += int(5 * effect_curve * dose_factor)
+
+                snapshot['pharmacology']['effect_curve'] = round(effect_curve, 4)
+                snapshot['pharmacology']['k_el'] = round(k_el, 4)
+
+                if MEDICATION_SIM_TIME > 3.0 and effect_curve < 0.005:
+                    SIMULATED_MEDICATION = None
+                    SIMULATED_MEDICATION_DOSE = 0.0
+                    MEDICATION_SIM_TIME = 0.0
                 
                 
             yield f"data: {json.dumps(snapshot)}\n\n"
@@ -745,24 +920,71 @@ async def stream_telemetry():
 
 
 def sqlite_writer_loop():
-    """Periodically write the current telemetry snapshot to SQLite."""
+    """Periodically persist the current telemetry snapshot under ACTIVE_PATIENT_ID."""
     while True:
         snapshot = build_telemetry_snapshot()
-        insert_telemetry(snapshot)
+        insert_telemetry(snapshot, patient_id=ACTIVE_PATIENT_ID)
         time.sleep(1.0)
 
 
+def _resolve_patient_id(query_patient_id: Optional[str], user: Optional[dict]) -> str:
+    """Read-time patient resolution: explicit query → JWT sub → active default."""
+    if query_patient_id:
+        return query_patient_id
+    if user and not user.get("anonymous") and user.get("sub"):
+        return str(user["sub"])
+    return ACTIVE_PATIENT_ID
+
+
 @app.get("/api/snapshot")
-async def get_snapshot():
+async def get_snapshot(patient_id: Optional[str] = None, user=Depends(require_user)):
     """Return a single snapshot of telemetry data fetched from SQLite."""
-    data = get_latest_telemetry()
+    pid = _resolve_patient_id(patient_id, user)
+    data = get_latest_telemetry(patient_id=pid)
     return data if data else build_telemetry_snapshot()
 
 
 @app.get("/api/interpretations")
-async def get_interpretations():
+async def get_interpretations(patient_id: Optional[str] = None, user=Depends(require_user)):
     """Return the latest AI interpretations for each specialty from SQLite."""
-    return get_latest_interpretations()
+    pid = _resolve_patient_id(patient_id, user)
+    return get_latest_interpretations(patient_id=pid)
+
+
+@app.get("/api/history")
+async def api_history(
+    patient_id: Optional[str] = None,
+    resolution: str = "1h",
+    limit: int = 500,
+    user=Depends(require_user),
+):
+    """
+    Rolled-up HR / SpO2 / BR / HRV time series for the /history dashboard.
+    resolution ∈ {"1m", "1h"}. Data is sourced from the Timescale continuous
+    aggregate when MEDVERSE_DB_URL is set; otherwise bucketed in Python
+    from SQLite.
+    """
+    if resolution not in ("1m", "1h"):
+        resolution = "1h"
+    pid = _resolve_patient_id(patient_id, user)
+    return get_history(patient_id=pid, resolution=resolution, limit=max(1, min(limit, 2000)))
+
+
+class ActivePatientRequest(BaseModel):
+    patient_id: str
+
+
+@app.post("/api/patient/active")
+async def set_active_patient(req: ActivePatientRequest, user=Depends(require_user)):
+    """Swap the in-memory ACTIVE_PATIENT_ID that the SQLite writer loop uses."""
+    global ACTIVE_PATIENT_ID
+    ACTIVE_PATIENT_ID = req.patient_id or DEFAULT_PATIENT_ID
+    return {"status": "success", "active_patient_id": ACTIVE_PATIENT_ID}
+
+
+@app.get("/api/patient/active")
+async def get_active_patient(user=Depends(require_user)):
+    return {"active_patient_id": ACTIVE_PATIENT_ID}
 
 class SimulationRequest(BaseModel):
     mode: str
@@ -793,13 +1015,85 @@ async def inject_medication(req: MedicationRequest):
 import base64
 from groq import Groq
 import os
-from dotenv import load_dotenv
 
-load_dotenv()
 try:
     groq_client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
 except:
     groq_client = None
+
+# =============================================================
+# FHIR R4 INTEROP
+# =============================================================
+
+DEFAULT_PATIENT_ID = "medverse-demo-patient"
+
+
+@app.get("/api/fhir/Observation/latest")
+async def fhir_observations_latest(patient_id: str = DEFAULT_PATIENT_ID, user=Depends(require_user)):
+    """Latest telemetry snapshot serialized as a list of FHIR Observations."""
+    snap = get_latest_telemetry() or build_telemetry_snapshot()
+    return snapshot_to_observations(snap, patient_id=patient_id)
+
+
+@app.get("/api/fhir/Bundle/latest")
+async def fhir_bundle_latest(patient_id: str = DEFAULT_PATIENT_ID, user=Depends(require_user)):
+    """Latest telemetry as a FHIR R4 Bundle of Observations."""
+    snap = get_latest_telemetry() or build_telemetry_snapshot()
+    return snapshot_to_bundle(snap, patient_id=patient_id)
+
+
+@app.get("/api/fhir/DiagnosticReport/latest")
+async def fhir_diagnostic_reports_latest(patient_id: str = DEFAULT_PATIENT_ID, user=Depends(require_user)):
+    """All specialty interpretations serialized as FHIR DiagnosticReports."""
+    interpretations = get_latest_interpretations() or {}
+    reports = []
+    for specialty, payload in interpretations.items():
+        reports.append(
+            expert_to_diagnostic_report(
+                specialty=specialty,
+                finding=payload.get("interpretation", ""),
+                severity=payload.get("severity", "unknown"),
+                severity_score=payload.get("severity_score", 0.0),
+                patient_id=patient_id,
+                generated_at=payload.get("generated_at"),
+                confidence=payload.get("confidence", 0.0),
+            )
+        )
+    return reports
+
+
+@app.get("/api/fhir/DiagnosticReport/{specialty}/latest")
+async def fhir_diagnostic_report_by_specialty(
+    specialty: str, patient_id: str = DEFAULT_PATIENT_ID, user=Depends(require_user)
+):
+    interpretations = get_latest_interpretations() or {}
+    key = next((k for k in interpretations if k.lower() == specialty.lower()), None)
+    if key is None:
+        return {"error": "not_found", "specialty": specialty}
+    payload = interpretations[key]
+    return expert_to_diagnostic_report(
+        specialty=key,
+        finding=payload.get("interpretation", ""),
+        severity=payload.get("severity", "unknown"),
+        severity_score=payload.get("severity_score", 0.0),
+        patient_id=patient_id,
+        generated_at=payload.get("generated_at"),
+        confidence=payload.get("confidence", 0.0),
+    )
+
+
+@app.get("/api/fhir/Patient/{patient_id}")
+async def fhir_patient(patient_id: str, user=Depends(require_user)):
+    return patient_resource(patient_id)
+
+
+@app.get("/api/fhir/Device")
+async def fhir_devices(user=Depends(require_user)):
+    return [
+        device_resource(VEST_DEVICE_NAME, serial="AEGIS-VEST-001"),
+        device_resource(FETAL_DEVICE_NAME, serial="ABDOMEN-MON-001"),
+    ]
+
 
 @app.post("/api/upload-lab-results")
 async def upload_lab_results(file: UploadFile = File(...)):

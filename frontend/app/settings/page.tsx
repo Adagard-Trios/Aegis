@@ -3,6 +3,7 @@
 import DashboardLayout from "../components/DashboardLayout";
 import { motion } from "framer-motion";
 import { Settings, Wifi, Shield, Bell, Monitor, Bluetooth, Database, Cpu } from "lucide-react";
+import { API_URL } from "../lib/api";
 
 export default function SettingsPage() {
   return (
@@ -30,7 +31,7 @@ export default function SettingsPage() {
           <div className="space-y-4">
             {[
               { label: "BLE Device", value: "Aegis_SpO2_Live", icon: Bluetooth },
-              { label: "Backend API", value: "http://localhost:8000", icon: Database },
+              { label: "Backend API", value: API_URL, icon: Database },
               { label: "Stream Rate", value: "10 Hz (SSE)", icon: Monitor },
               { label: "Sample Rate", value: "40 Hz (Sensor)", icon: Cpu },
             ].map((s) => (

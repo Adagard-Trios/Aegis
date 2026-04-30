@@ -3,6 +3,7 @@
 import { useState, useRef } from "react";
 import { Upload, FlaskConical, Clock, HeartPulse, Activity } from "lucide-react";
 import { useVestStream } from "../hooks/useVestStream";
+import { apiPost, apiPostForm } from "../lib/api";
 
 export function SimulationControls() {
   const { data } = useVestStream();
@@ -15,11 +16,7 @@ export function SimulationControls() {
   const setSimulationMode = async (mode: string) => {
     setActiveMode(mode);
     try {
-      await fetch("http://localhost:8000/api/simulation/mode", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ mode }),
-      });
+      await apiPost("/api/simulation/mode", { mode });
     } catch (e) {
       console.error("Failed to set mode", e);
     }
@@ -29,37 +26,32 @@ export function SimulationControls() {
     if (!e.target.files || e.target.files.length === 0) return;
     const file = e.target.files[0];
     setUploadStatus("Processing Lab Report via Gemini...");
-    
+
     try {
       const formData = new FormData();
       formData.append("file", file);
 
-      const response = await fetch("http://localhost:8000/api/upload-lab-results", {
-        method: "POST",
-        body: formData,
-      });
-
-      const parsedData = await response.json();
+      const parsedData = await apiPostForm<{ status: string; extracted_data: { CYP2D6: string } }>(
+        "/api/upload-lab-results",
+        formData
+      );
       if (parsedData.status === "success") {
-        setUploadStatus(`Extraction Complete. Patient detected as: ${parsedData.extracted_data.CYP2D6}. Active Pharmacodynamics matrix updated.`);
+        setUploadStatus(
+          `Extraction Complete. Patient detected as: ${parsedData.extracted_data.CYP2D6}. Active Pharmacodynamics matrix updated.`
+        );
         setTimeout(() => setUploadStatus(null), 8000);
       }
     } catch (e) {
       console.error("Failed to upload labs", e);
       setUploadStatus("Extraction Failed.");
     }
-    
-    // clear input
-    if (fileInputRef.current) fileInputRef.current.value = '';
+
+    if (fileInputRef.current) fileInputRef.current.value = "";
   };
 
   const injectMedication = async (medication: string, dose: number) => {
     try {
-      await fetch("http://localhost:8000/api/simulation/medicate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ medication, dose }),
-      });
+      await apiPost("/api/simulation/medicate", { medication, dose });
       setMedicationStatus(`Administering ${medication} - See active Pharmacokinetics below.`);
       setTimeout(() => setMedicationStatus(null), 5000);
     } catch (e) {
