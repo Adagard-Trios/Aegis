@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 import os
+import secrets
 import time
 from typing import List, Optional
 
@@ -43,8 +44,26 @@ def cors_origins() -> List[str]:
     return [o.strip() for o in raw.split(",") if o.strip()]
 
 
+_WEAK_SECRETS = {"", "dev-insecure-change-me", "change-this-to-a-long-random-string"}
+_EPHEMERAL_SECRET: Optional[str] = None
+
+
 def _secret() -> str:
-    return os.environ.get("MEDVERSE_JWT_SECRET", "dev-insecure-change-me")
+    global _EPHEMERAL_SECRET
+    s = os.environ.get("MEDVERSE_JWT_SECRET", "")
+    if s and s not in _WEAK_SECRETS:
+        return s
+    if auth_enabled():
+        raise RuntimeError(
+            "MEDVERSE_JWT_SECRET must be set to a strong value when MEDVERSE_AUTH_ENABLED=true"
+        )
+    if _EPHEMERAL_SECRET is None:
+        _EPHEMERAL_SECRET = secrets.token_urlsafe(32)
+        logger.warning(
+            "MEDVERSE_JWT_SECRET unset/weak; using ephemeral per-process secret. "
+            "Tokens will not survive a restart. Set MEDVERSE_JWT_SECRET for stable sessions."
+        )
+    return _EPHEMERAL_SECRET
 
 
 def _algorithm() -> str:

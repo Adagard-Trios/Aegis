@@ -1,12 +1,14 @@
 """
-Aegis Vest — FastAPI Backend with BLE Streaming
-Connects to 'Aegis_SpO2_Live' via BLE and streams telemetry over SSE.
-Falls back to simulated data when no device is available.
+MedVerse — FastAPI Backend with BLE Streaming
+Connects to the MedVerse vest (advertised as 'Aegis_SpO2_Live' by the
+ESP32-S3 firmware) via BLE and streams telemetry over SSE. Falls back
+to simulated data when no device is available.
 """
 
 import asyncio
 import json
 import math
+import random
 import time
 import threading
 from collections import deque
@@ -763,7 +765,7 @@ async def lifespan(app: FastAPI):
     sqlite_thread.start()
     yield
 
-app = FastAPI(title="Aegis Vest Telemetry API", version="1.0.0", lifespan=lifespan)
+app = FastAPI(title="MedVerse Telemetry API", version="1.0.0", lifespan=lifespan)
 
 _cors_origins = cors_origins()
 app.add_middleware(
@@ -864,6 +866,35 @@ async def stream_telemetry(token: Optional[str] = None, patient_id: Optional[str
                     snapshot['vitals']['heart_rate'] = 95.0
                     snapshot['fetal']['contractions'] = [True, True]
                     snapshot['fetal']['kicks'] = [True, True, True, False]
+
+            # Clinical-scenario overlay — drive the vitals into edge cases that
+            # exercise the agent fan-out during demos. Set via POST /api/simulation/scenario.
+            global SIMULATED_SCENARIO
+            scenario = SIMULATED_SCENARIO or "normal"
+            if scenario != "normal":
+                if scenario == "tachycardia":
+                    snapshot['vitals']['heart_rate'] = round(138 + random.uniform(-3, 3), 1)
+                    snapshot['ecg']['ecg_hr'] = snapshot['vitals']['heart_rate']
+                    snapshot['vitals']['hrv_rmssd'] = round(18 + random.uniform(-2, 2), 1)
+                elif scenario == "hypoxia":
+                    snapshot['vitals']['spo2'] = round(88 + random.uniform(-2, 2), 1)
+                    snapshot['vitals']['breathing_rate'] = round(24 + random.uniform(-2, 2), 1)
+                    snapshot['vitals']['heart_rate'] = round(snapshot['vitals']['heart_rate'] + 12, 1)
+                elif scenario == "fetal_decel":
+                    snapshot['fetal']['contractions'] = [True, True]
+                    snapshot['fetal']['kicks'] = [False, False, False, False]
+                    snapshot['fetal']['heart_tones'] = [True, True]
+                    if isinstance(snapshot['fetal'].get('dawes_redman'), dict):
+                        snapshot['fetal']['dawes_redman']['fhr_baseline'] = 95
+                        snapshot['fetal']['dawes_redman']['decelerations'] = "late"
+                        snapshot['fetal']['dawes_redman']['reactivity'] = "non-reactive"
+                elif scenario == "arrhythmia":
+                    snapshot['vitals']['hrv_rmssd'] = round(95 + random.uniform(-5, 5), 1)
+                    if random.random() < 0.15:
+                        snapshot['vitals']['heart_rate'] = round(
+                            snapshot['vitals']['heart_rate'] + random.choice([-25.0, 30.0]), 1
+                        )
+            snapshot['scenario'] = scenario
 
             # Pharmacokinetic / Pharmacodynamic overlay — two-compartment Bateman curve.
             # C(t) ∝ (k_abs / (k_abs − k_el)) · (e^−k_el·t − e^−k_abs·t)
@@ -1011,6 +1042,53 @@ async def inject_medication(req: MedicationRequest):
     SIMULATED_MEDICATION_DOSE = req.dose
     MEDICATION_SIM_TIME = 0.0
     return {"status": "success", "medication": req.medication, "dose": req.dose}
+
+
+SIMULATED_SCENARIO = "normal"
+_VALID_SCENARIOS = {"normal", "tachycardia", "hypoxia", "fetal_decel", "arrhythmia"}
+
+
+class ScenarioRequest(BaseModel):
+    scenario: str
+
+
+@app.post("/api/simulation/scenario")
+async def set_scenario(req: ScenarioRequest):
+    """Switch the live mock-data scenario. Used to demo agent fan-out without
+    real abnormal hardware data."""
+    global SIMULATED_SCENARIO
+    if req.scenario not in _VALID_SCENARIOS:
+        from fastapi import HTTPException, status as _status
+        raise HTTPException(
+            status_code=_status.HTTP_400_BAD_REQUEST,
+            detail=f"scenario must be one of {sorted(_VALID_SCENARIOS)}",
+        )
+    SIMULATED_SCENARIO = req.scenario
+    return {"status": "success", "scenario": SIMULATED_SCENARIO}
+
+
+@app.get("/api/simulation/scenario")
+async def get_scenario():
+    return {"scenario": SIMULATED_SCENARIO, "available": sorted(_VALID_SCENARIOS)}
+
+
+class CYP2D6Request(BaseModel):
+    status: str
+
+
+@app.post("/api/simulation/cyp2d6")
+async def set_cyp2d6(req: CYP2D6Request):
+    """Set the simulated CYP2D6 metabolizer status. Drives the k_el modulation
+    in the PK/PD overlay above (Poor Metabolizer → 60% elimination rate)."""
+    global PATIENT_CYP2D6_STATUS
+    if req.status not in ("Normal Metabolizer", "Poor Metabolizer"):
+        from fastapi import HTTPException, status as _status
+        raise HTTPException(
+            status_code=_status.HTTP_400_BAD_REQUEST,
+            detail="status must be 'Normal Metabolizer' or 'Poor Metabolizer'",
+        )
+    PATIENT_CYP2D6_STATUS = req.status
+    return {"status": "success", "cyp2d6_status": PATIENT_CYP2D6_STATUS}
 
 import base64
 from groq import Groq

@@ -133,8 +133,8 @@ The orchestration flow is documented as two PNGs under [assets/](assets/):
      │            ├── pulmonary_graph     ──┤                        │
      │            ├── neurology_graph     ──┤                        │
      │            ├── dermatology_graph   ──┼─▶ general_physician    │
-     │            ├── gynology_graph      ──┤     (synthesis)        │
-     │            └── occular_graph       ──┘                        │
+     │            ├── gynecology_graph    ──┤     (synthesis)        │
+     │            └── ocular_graph        ──┘                        │
      │  doctor_graph ── clinical-staff variant                       │
      │  Each expert → Groq LLM + src/knowledge/*.md + Chroma RAG     │
      └───────────────────────────────────────────────────────────────┘
@@ -143,7 +143,7 @@ The orchestration flow is documented as two PNGs under [assets/](assets/):
 ## Repository layout
 
 ```
-X-New-Final/
+medverse/
 ├── app.py                    # FastAPI backend — BLE, SSE, REST, DSP, PK/PD, OCR
 ├── main.py                   # Minimal aux entry
 ├── langgraph.json            # Registers 9 LangGraph graphs
@@ -292,7 +292,7 @@ All variables are loaded from [.env](.env) via `python-dotenv`. A complete, safe
 | `ENT_EXPERT_GROQ_API_KEY`             | Reserved — ENT expert                                       |
 | `ORTHOPEDIC_EXPERT_GROQ_API_KEY`      | Reserved — orthopedic expert                                |
 | `PHARMACOLOGY_EXPERT_GROQ_API_KEY`    | Reserved — pharmacology expert                              |
-| `ENDCRINOLIGIST_EXPERT_GROQ_API_KEY`  | Reserved — endocrinology expert (note misspelling in `.env`) |
+| `ENDOCRINOLOGIST_EXPERT_GROQ_API_KEY` | Reserved — endocrinology expert                             |
 | `NEPHROLOGY_EXPERT_GROQ_API_KEY`      | Reserved — nephrology expert                                |
 
 ### Backend runtime flags
@@ -301,7 +301,7 @@ All variables are loaded from [.env](.env) via `python-dotenv`. A complete, safe
 |-----------------------------------|-------------------------------------------------------|---------|
 | `MEDVERSE_SAMPLE_RATE`            | `40`                                                  | Expected BLE payload cadence. Drives `BUFFER_SIZE`, `SPO2_WINDOW`, `BR_WINDOW`. See [Firmware sample-rate architecture](#firmware-sample-rate-architecture) before bumping this past `40` — NimBLE packet rate is the real ceiling, not the env var. |
 | `MEDVERSE_AUTH_ENABLED`           | `false`                                               | When `true`, `/api/**` endpoints require a valid JWT bearer token |
-| `MEDVERSE_JWT_SECRET`             | `dev-insecure-change-me`                              | HMAC secret used to sign JWTs — **rotate before any real use** |
+| `MEDVERSE_JWT_SECRET`             | *(unset → ephemeral random in dev; required in prod)* | HMAC secret used to sign JWTs. When `MEDVERSE_AUTH_ENABLED=true` and this is missing/weak, startup raises `RuntimeError`. |
 | `MEDVERSE_JWT_ALG`                | `HS256`                                               | JWT signing algorithm |
 | `MEDVERSE_JWT_EXPIRY_SECONDS`     | `3600`                                                | Access-token lifetime |
 | `MEDVERSE_DEV_USERNAME`           | `medverse`                                            | Dev-login username (`POST /api/auth/login`) |
@@ -570,11 +570,9 @@ Registered in [langgraph.json](langgraph.json):
 | `pulmonary_graph`          | [src/graphs/pulmonary_graph.py](src/graphs/pulmonary_graph.py)  | SpO₂, breathing, lung-sound assessment |
 | `neurology_graph`          | [src/graphs/neurology_graph.py](src/graphs/neurology_graph.py)  | IMU-derived gait, tremor, fall-risk, autonomic HRV |
 | `dermatology_graph`        | [src/graphs/dermatology_graph.py](src/graphs/dermatology_graph.py) | Skin-temp gradient, sweat profile |
-| `gynology_graph`*          | [src/graphs/gynology_graph.py](src/graphs/gynology_graph.py)    | Maternal-fetal: FHR, contractions, kicks, Dawes-Redman |
-| `occular_graph`*           | [src/graphs/occular_graph.py](src/graphs/occular_graph.py)      | Ocular / oculometric surrogate |
+| `gynecology_graph`         | [src/graphs/gynecology_graph.py](src/graphs/gynecology_graph.py) | Maternal-fetal: FHR, contractions, kicks, Dawes-Redman |
+| `ocular_graph`             | [src/graphs/ocular_graph.py](src/graphs/ocular_graph.py)        | Ocular / oculometric surrogate |
 | `general_physician_graph`  | [src/graphs/general_physician_graph.py](src/graphs/general_physician_graph.py) | Synthesizer — combines specialist outputs into a unified narrative |
-
-*`gynology_graph` and `occular_graph` preserve the in-repo spelling — keep the id verbatim when calling the LangGraph API.
 
 The specialty sub-graphs share a common `information_retrieval → interpretation_generation` skeleton produced by [src/graphs/graph_factory.py](src/graphs/graph_factory.py), using the state shapes defined under [src/states/](src/states/).
 
@@ -875,7 +873,7 @@ Until weight files land, the runtime adapters report `is_loaded = False` and the
 
 MedVerse ships **security-capable but not security-mandatory** — auth is off by default so newcomers can run it in one step, and every security surface is a single env flip away from production posture:
 
-- **Auth**: set `MEDVERSE_AUTH_ENABLED=true` and rotate `MEDVERSE_JWT_SECRET` (the committed default `dev-insecure-change-me` is intentionally obvious). Every `/api/**` route already has `Depends(require_user)` attached, and `/stream` enforces `?token=` when auth is on.
+- **Auth**: set `MEDVERSE_AUTH_ENABLED=true` and provide a strong `MEDVERSE_JWT_SECRET` — startup hard-fails if auth is on and the secret is unset or matches the obvious dev placeholders. With auth off, the backend generates an ephemeral per-process secret (tokens won't survive a restart). Every `/api/**` route already has `Depends(require_user)` attached, and `/stream` enforces `?token=` when auth is on.
 - **CORS**: allowlist is driven by `MEDVERSE_CORS_ORIGINS` (default: `localhost:3000` only). Never set it to `*` on a deployed backend.
 - **Groq keys**: the committed [.env](.env) holds real-looking keys from earlier iterations. **Before sharing this repo** — rotate every `gsk_…` key at https://console.groq.com, ensure [.env](.env) stays in [.gitignore](.gitignore), and scrub Git history with `git filter-repo` or BFG.
 - **Frontend JWT storage**: `localStorage.medverse_token`. Swap for HttpOnly cookies before any production deployment that touches real patient data.

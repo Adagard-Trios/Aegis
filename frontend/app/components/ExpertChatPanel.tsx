@@ -38,7 +38,7 @@ export function ExpertChatPanel() {
   const [messages, setMessages] = useState<Message[]>([
     {
       role: "assistant",
-      content: `Hello, I'm your **${EXPERTS[0].label}** AI assistant powered by the Aegis multi-agent system. I have access to your real-time vest telemetry. How can I help you today?`,
+      content: `Hello, I'm your **${EXPERTS[0].label}** AI assistant powered by the MedVerse multi-agent system. I have access to your real-time vest telemetry. How can I help you today?`,
     },
   ]);
   const [input, setInput] = useState("");
@@ -115,7 +115,7 @@ export function ExpertChatPanel() {
 
     setTimeout(() => {
       const responses: Record<string, string> = {
-        general: `Based on the current telemetry from your Aegis vest, all systems are nominal. Your heart rate of **72 BPM** is within the healthy resting range, SpO₂ is at **98%**, and core temperature is **36.8°C**.`,
+        general: `Based on the current telemetry from your MedVerse vest, all systems are nominal. Your heart rate of **72 BPM** is within the healthy resting range, SpO₂ is at **98%**, and core temperature is **36.8°C**.`,
         cardio: `Analyzing your ECG traces from Lead I and Lead II vectors. Sinus rhythm is confirmed with no ST-segment elevation or depression. QRS complex duration is within normal limits at **0.08s**.`,
         pulmo: `I2S acoustic analysis shows clear lung fields bilaterally. No crackles, wheezing, or rhonchi detected. Your respiratory rate of **16 breaths/min** is within the normal eupneic range.`,
         gyno: `Reviewing available biometric data. Core temperature tracking is stable. For comprehensive monitoring, I recommend enabling the Foetal Monitoring Module if applicable.`,
@@ -160,7 +160,7 @@ export function ExpertChatPanel() {
               <div className="flex items-center gap-2">
                 <Stethoscope className="w-5 h-5 text-primary" />
                 <span className="font-display font-semibold text-secondary-foreground text-sm">
-                  Aegis Expert Console
+                  MedVerse Expert Console
                 </span>
               </div>
               <button

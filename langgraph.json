@@ -9,8 +9,8 @@
         "pulmonary_graph": "src/graphs/pulmonary_graph.py:graph",
         "neurology_graph": "src/graphs/neurology_graph.py:graph",
         "dermatology_graph": "src/graphs/dermatology_graph.py:graph",
-        "gynology_graph": "src/graphs/gynology_graph.py:graph",
-        "occular_graph": "src/graphs/occular_graph.py:graph",
+        "gynecology_graph": "src/graphs/gynecology_graph.py:graph",
+        "ocular_graph": "src/graphs/ocular_graph.py:graph",
         "general_physician_graph": "src/graphs/general_physician_graph.py:graph"
     },
     "env": ".env"

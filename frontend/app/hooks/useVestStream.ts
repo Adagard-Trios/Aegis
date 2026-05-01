@@ -79,6 +79,7 @@ export interface TelemetryData {
     effect_curve?: number;
     k_el?: number;
   };
+  scenario?: string;
   imu_derived?: {
     tremor: { band_power: number; total_power: number; band_ratio: number; tremor_flag: boolean };
     gait: { stride_count: number; mean_stride_s: number; stride_cv: number; asymmetry_flag: boolean };

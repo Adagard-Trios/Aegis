@@ -520,7 +520,7 @@ function FuturisticVest() {
         </mesh>
       ))}
 
-      {/* === Aegis emblem — glowing hexagon === */}
+      {/* === MedVerse emblem — glowing hexagon === */}
       <mesh position={[0, 0.29, 0.208]}>
         <circleGeometry args={[0.022, 6]} />
         <meshBasicMaterial color="#ffffff" toneMapped={false} />

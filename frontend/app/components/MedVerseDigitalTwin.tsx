@@ -73,7 +73,7 @@ export function MedVerseDigitalTwin() {
         {/* HUD uses displayData (Mocked or Live) */}
         <div className="absolute top-4 left-4 p-4 bg-slate-900/60 backdrop-blur-xl border border-slate-700/50 rounded-xl w-64 shadow-2xl pointer-events-none hidden md:block">
             <h2 className="text-base font-bold bg-gradient-to-r from-blue-400 to-indigo-400 bg-clip-text text-transparent mb-3">
-                Aegis Digital Twin
+                MedVerse Digital Twin
             </h2>
             
             <div className="space-y-3">

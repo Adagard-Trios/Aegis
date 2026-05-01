@@ -24,8 +24,8 @@ from src.graphs.cardiology_graph import graph as cardiology_graph
 from src.graphs.pulmonary_graph import graph as pulmonary_graph
 from src.graphs.neurology_graph import graph as neurology_graph
 from src.graphs.dermatology_graph import graph as dermatology_graph
-from src.graphs.gynology_graph import graph as gynology_graph
-from src.graphs.occular_graph import graph as occular_graph
+from src.graphs.gynecology_graph import graph as gynecology_graph
+from src.graphs.ocular_graph import graph as ocular_graph
 from src.graphs.general_physician_graph import graph as gp_graph
 
 # Registry: domain string → compiled graph
@@ -34,8 +34,8 @@ _SPECIALTY_GRAPHS = {
     "Pulmonary": pulmonary_graph,
     "Neurology": neurology_graph,
     "Dermatology": dermatology_graph,
-    "Obstetrics": gynology_graph,
-    "Ocular": occular_graph,
+    "Obstetrics": gynecology_graph,
+    "Ocular": ocular_graph,
     "General Physician": gp_graph,
 }
 

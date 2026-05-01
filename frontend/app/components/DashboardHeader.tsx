@@ -15,7 +15,7 @@ export function DashboardHeader() {
           Patient Dashboard
         </motion.h1>
         <p className="text-sm text-muted-foreground mt-0.5">
-          Real-time telemetry from Aegis Clinical Wearable Platform
+          Real-time telemetry from MedVerse Clinical Wearable Platform
         </p>
       </div>
       <div className="flex items-center gap-3">
@@ -49,7 +49,7 @@ export function VestStatusCard() {
 
       <div className="relative z-10">
         <h3 className="font-display font-semibold text-secondary-foreground text-sm mb-1">
-          Aegis Vest v2.4
+          MedVerse Vest v2.4
         </h3>
         <p className="text-xs text-secondary-foreground/60 mb-3 leading-relaxed">
           15-sensor clinical array • ESP32-S3 dual-core • FreeRTOS

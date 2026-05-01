@@ -5,6 +5,7 @@ import { Canvas } from '@react-three/fiber';
 import { OrbitControls, Environment, ContactShadows, Stars, Sparkles } from '@react-three/drei';
 import MedicalModel from './MedicalModel';
 import { useVestStream } from '../hooks/useVestStream';
+import { PharmacologyPanel } from '../components/PharmacologyPanel';
 
 export default function DigitalTwinPage() {
   const { data, connected, error } = useVestStream();
@@ -52,7 +53,7 @@ export default function DigitalTwinPage() {
         {/* Floating Telemetry HUD */}
         <div className="absolute top-8 left-8 p-6 bg-slate-900/40 backdrop-blur-xl border border-slate-700/50 rounded-2xl w-80 shadow-2xl pointer-events-none">
             <h1 className="text-2xl font-bold bg-gradient-to-r from-blue-400 to-indigo-400 bg-clip-text text-transparent mb-6">
-                Aegis Digital Twin
+                MedVerse Digital Twin
             </h1>
             
             <div className="space-y-4">
@@ -104,6 +105,11 @@ export default function DigitalTwinPage() {
                     </div>
                 </div>
             </div>
+        </div>
+
+        {/* PK/PD centerpiece — drives heart-rate / contractions via /api/simulation/medicate */}
+        <div className="absolute top-8 right-8 pointer-events-auto">
+          <PharmacologyPanel />
         </div>
 
       </div>
