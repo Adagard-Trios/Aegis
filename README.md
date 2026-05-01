@@ -146,13 +146,16 @@ The orchestration flow is documented as two PNGs under [assets/](assets/):
 medverse/
 ├── app.py                    # FastAPI backend — BLE, SSE, REST, DSP, PK/PD, OCR
 ├── main.py                   # Minimal aux entry
+├── start.sh                  # One-command demo (boots backend + frontend)
+├── DEMO.md                   # 5-minute demo walkthrough + endpoint reference
+├── LICENSE                   # MIT
 ├── langgraph.json            # Registers 9 LangGraph graphs
 ├── pyproject.toml            # Python deps (requires-python >=3.13)
 ├── requirements.txt          # pip-compatible dep list
 ├── uv.lock                   # uv resolver lockfile
 ├── .python-version           # 3.13
 ├── .env                      # Groq API keys (see SECURITY notice)
-├── aegis_local.db            # SQLite telemetry + interpretations (~100 MB)
+├── aegis_local.db            # SQLite telemetry + interpretations (~100 MB, gitignored)
 ├── chroma_data/              # Chroma vector store, one collection per specialty
 ├── .langgraph_api/           # LangGraph CLI checkpoint pickles
 ├── assets/                   # Workflow diagram PNGs
@@ -196,6 +199,14 @@ medverse/
 
 ## Quick start
 
+### One-command demo
+
+```bash
+./start.sh
+```
+
+Boots the FastAPI backend on `:8000` and the Next.js frontend on `:3000` in parallel; Ctrl+C tears both down. See [DEMO.md](DEMO.md) for the 5-minute demo walkthrough and the full endpoint reference. The steps below are the manual equivalent.
+
 ### 1. Backend
 
 ```bash
@@ -225,7 +236,7 @@ pip install "psycopg2-binary>=2.9"
 On startup, [app.py](app.py) spawns:
 - a BLE thread that scans for `Aegis_SpO2_Live` and `AbdomenMonitor` (10 s timeout) and falls back to a mock generator if neither is found,
 - a SQLite writer thread that persists a snapshot every 1 s,
-- the FastAPI app with `CORS` `allow_origins=["*"]`.
+- the FastAPI app with a CORS allowlist driven by `MEDVERSE_CORS_ORIGINS` (defaults to `localhost:3000` + `127.0.0.1:3000` — never wildcard).
 
 ### 2. Frontend
 
@@ -344,8 +355,11 @@ All endpoints are defined in [app.py](app.py). Base URL: `http://localhost:8000`
 
 | Method | Path                          | Purpose |
 |--------|-------------------------------|---------|
-| POST   | `/api/simulation/mode`        | Body: `{"mode": "Live"\|"6h"\|"12h"\|"24h"\|"2w"\|"4w"}` |
+| POST   | `/api/simulation/mode`        | Body: `{"mode": "Live"\|"6h"\|"12h"\|"24h"\|"2w"\|"4w"}` — temporal projection |
+| POST   | `/api/simulation/scenario`    | Body: `{"scenario": "normal"\|"tachycardia"\|"hypoxia"\|"fetal_decel"\|"arrhythmia"}` — switches the live mock-data scenario to drive agent fan-out |
+| GET    | `/api/simulation/scenario`    | Returns `{"scenario": str, "available": [str]}` |
 | POST   | `/api/simulation/medicate`    | Body: `{"medication": str, "dose": float}` — starts a Bateman PK/PD curve |
+| POST   | `/api/simulation/cyp2d6`      | Body: `{"status": "Normal Metabolizer"\|"Poor Metabolizer"}` — toggles k_el modulation in the PK/PD overlay |
 | POST   | `/api/upload-lab-results`     | Multipart `file` (PNG/JPG lab report) — extracts AST/ALT/CYP2D6 via Groq vision and sets `PATIENT_CYP2D6_STATUS` |
 
 ### Authentication
@@ -396,6 +410,7 @@ Built by `build_telemetry_snapshot()` in [app.py](app.py). Emitted on `/stream` 
                   "film_pressure[2]", "contractions[2]" },
   "pharmacology":{ "active_medication", "dose", "sim_time",
                    "clearance_model", "effect_curve", "k_el" },
+  "scenario":   "normal|tachycardia|hypoxia|fetal_decel|arrhythmia",
   "imu_derived": {
     "tremor":   { "band_power", "total_power", "band_ratio", "tremor_flag" },
     "gait":     { "stride_count", "mean_stride_s", "stride_cv", "asymmetry_flag" },
@@ -705,6 +720,20 @@ Fetal payload is JSON (not key:value) — parsed at [app.py:231](app.py#L231): `
 | `2w`   | Spinal angle + 5°, HR 85                                            |
 | `4w`   | Spinal angle + 12°, HR 95, both contractions + 3/4 kicks            |
 
+### Clinical scenarios
+
+`POST /api/simulation/scenario` switches the live mock-data feed into a clinical edge-case so the agent fan-out has something to react to during demos. Layered *underneath* the temporal projection and PK/PD overlays — drug effects still apply on top.
+
+| Scenario       | Effect on snapshot                                                                                  |
+|----------------|------------------------------------------------------------------------------------------------------|
+| `normal`       | Pass-through (default)                                                                               |
+| `tachycardia`  | HR clamped to ~138 bpm with ±3 jitter; `ecg_hr` mirrored; HRV depressed to ~18 ms                    |
+| `hypoxia`      | SpO₂ → ~88%, RR → ~24, HR shifted +12 bpm                                                            |
+| `fetal_decel`  | Forces both contractions on, suppresses fetal kicks, sets Dawes-Redman to `non-reactive` + `late` decels with `fhr_baseline=95` |
+| `arrhythmia`   | HRV spikes to ~95 ms; 15% of ticks add a ±25–30 bpm HR transient                                     |
+
+The active scenario is broadcast on every tick at `snapshot.scenario`. Read it back with `GET /api/simulation/scenario`.
+
 ### Drug injection
 
 `POST /api/simulation/medicate` overlays a **two-compartment Bateman** PK/PD curve on the stream. The effect rises from zero, peaks, then decays — so the simulation actually washes out instead of locking at max effect.
@@ -725,9 +754,14 @@ Per-drug constants (see [app.py](app.py)):
 
 `effect` is clipped to `[0, 1]` and exposed in the stream at `pharmacology.effect_curve`; the active `k_el` is at `pharmacology.k_el`. Once `sim_time > 3.0` and `effect_curve < 0.005`, the active medication is cleared automatically so a fresh `/api/simulation/medicate` call gives a clean curve.
 
-### Lab-result OCR
+### CYP2D6 status
 
-`POST /api/upload-lab-results` accepts a PNG/JPG of a lab report and calls Groq `llama-3.2-11b-vision-preview` to extract AST, ALT, and CYP2D6 metabolizer status ([app.py:804](app.py#L804)). If CYP2D6 is not explicitly listed, it is deduced from liver enzymes (AST/ALT > 100 U/L ⇒ `Poor Metabolizer`). The resulting status drives the clearance constant above.
+Two paths set `PATIENT_CYP2D6_STATUS`:
+
+1. **Manual toggle** — `POST /api/simulation/cyp2d6` with `{"status": "Normal Metabolizer"|"Poor Metabolizer"}`. Used by the PK/PD panel on `/digital-twin` for live demo flips.
+2. **Lab-result OCR** — `POST /api/upload-lab-results` accepts a PNG/JPG of a lab report and calls Groq `llama-3.2-11b-vision-preview` to extract AST, ALT, and CYP2D6 metabolizer status ([app.py:804](app.py#L804)). If CYP2D6 is not explicitly listed, it is deduced from liver enzymes (AST/ALT > 100 U/L ⇒ `Poor Metabolizer`).
+
+The resulting status drives the clearance constant above (`Poor Metabolizer` → `k_el × 0.6`).
 
 ## Web dashboard (frontend/)
 
@@ -751,15 +785,18 @@ npm run lint    # eslint
 | `/obstetrics`     | FHR + CTG, contractions, kicks, maternal HR/temp, Dawes-Redman |
 | `/respiratory`    | Pneumogram, lung-sound I²S stream, RR, SpO₂, tidal volume, COPD/apnea/hypoxia flags |
 | `/neurology`      | Dual-IMU posture, gait symmetry, tremor, fall risk, autonomic HRV LF/HF |
+| `/digital-twin`   | Full-screen 3D anatomical model + telemetry HUD + **PK/PD Simulator** panel (drug picker, dose slider, CYP2D6 toggle, live Bateman effect-curve chart) |
 | `/diagnostics`    | Multi-agent cross-evaluation with per-agent confidence |
 | `/environment`    | BMP280 + DHT11 ambient telemetry; DS18B20 × 3 skin-temp strip |
 | `/settings`       | BLE device info, backend URL, stream rate, alert thresholds, system info |
-| `/history`        | (stub) |
-| `/vest-viewer`    | (stub) |
+| `/history`        | Resolution toggle (1m/1h) and 4-panel recharts grid (HR, SpO₂, RR, HRV) backed by `/api/history` |
+| `/vest-viewer`    | 3D vest mesh inside `DashboardLayout` with a live sensor sidebar driven by `useVestStream`, scenario indicator, BLE status pill |
 
 **Streaming hook** — [frontend/app/hooks/](frontend/app/hooks/) exposes `useVestStream()`, which opens an `EventSource` against `http://localhost:8000/stream`, parses the JSON payload, and auto-reconnects after 3 s on disconnect. State is managed with plain React hooks — no Redux / Zustand / Context provider.
 
 **Digital twin** — a GLTF human skeleton coloured by core temperature, animated by live HR, and annotated with uterine-contraction/fetal-kick overlays; supports Live vs. projected scrubbing via the simulation endpoint.
+
+**PK/PD Simulator** — [frontend/app/components/PharmacologyPanel.tsx](frontend/app/components/PharmacologyPanel.tsx). Mounted on `/digital-twin`. Drug picker (labetalol / oxytocin), dose slider 0–100 mg, CYP2D6 metabolizer toggle, and a 60-second `recharts` line of `pharmacology.effect_curve` (Bateman). Posts to `/api/simulation/medicate` and `/api/simulation/cyp2d6`; consumes the live SSE stream for the chart and the modulated vital-readout strip.
 
 **Expert chat** — a right-side panel that lets you pick one of seven specialists and converse via text or Web Speech API voice I/O, with streaming markdown replies.
 
@@ -914,4 +951,4 @@ MedVerse ships **security-capable but not security-mandatory** — auth is off b
 
 ## License
 
-**TODO** — add a `LICENSE` file. The project does not currently declare a license.
+[MIT](LICENSE) © 2026 MedVerse Contributors.
