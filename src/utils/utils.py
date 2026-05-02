@@ -236,7 +236,7 @@ def retrieve_cross_specialty_flags() -> str:
 # EXPERT TOOLS REGISTRY — maps specialty → tool list
 # =============================================================================
 
-EXPERT_TOOLS = {
+_BASE_EXPERT_TOOLS = {
     "Cardiology Expert": [
         retrieve_ecg_data,
         retrieve_cardiac_biomarkers,
@@ -270,3 +270,20 @@ EXPERT_TOOLS = {
         retrieve_cross_specialty_flags,
     ],
 }
+
+
+def _build_expert_tools():
+    """Compose telemetry-retrieval tools with the model-prediction tools
+    registered in src.utils.model_tools.SPECIALTY_MODEL_TOOLS."""
+    try:
+        from src.utils.model_tools import get_model_tools
+    except Exception:
+        get_model_tools = lambda _s: []  # noqa: E731 — graceful degrade
+
+    composed = {}
+    for specialty, tools in _BASE_EXPERT_TOOLS.items():
+        composed[specialty] = list(tools) + list(get_model_tools(specialty))
+    return composed
+
+
+EXPERT_TOOLS = _build_expert_tools()

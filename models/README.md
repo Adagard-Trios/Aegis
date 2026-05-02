@@ -60,10 +60,17 @@ Each component consumes the previous component's `*Artifact` dataclass and retur
 
 ```bash
 cd models/<pipeline>
-python -m src.pipeline.training_pipeline                          # train end-to-end
+python main.py                                                    # train end-to-end (preferred)
+python -m src.pipeline.training_pipeline                          # equivalent to above
 python -m src.pipeline.batch_prediction --input x.csv --output y.csv
 uvicorn app:app --port 8001                                       # serve as microservice
 ```
+
+`main.py` is the canonical training trigger — every pipeline has an identical
+copy that walks DataIngestion → DataValidation → DataTransformation →
+ModelTrainer with explicit per-step logging. Use `python main.py` while
+filling in stubs (clearer error frames); use the `-m src.pipeline...` form
+in CI / production orchestrators.
 
 The skeleton's logger, exception wrapper, config/artifact dataclasses, and orchestrator are functional out-of-the-box. The two methods that **must** be filled in for any real run:
 
@@ -85,3 +92,30 @@ Each raises `NotImplementedError` until you fill it in, so an unconfigured pipel
 
 [registry.py](registry.py) lists every pipeline so the main FastAPI backend
 (`src/ml/`) and ops scripts can iterate without hardcoding paths.
+
+## LangGraph tool integration
+
+Every trained pipeline is exposed as a LangChain `@tool` in
+[src/utils/model_tools.py](../src/utils/model_tools.py) and registered against
+the relevant specialist graph through
+[src/utils/utils.py](../src/utils/utils.py)`:EXPERT_TOOLS`:
+
+| Specialist graph | Model tools |
+|---|---|
+| Cardiology Expert | `predict_ecg_arrhythmia`, `predict_cardiac_age`, `predict_ecg_biometric` |
+| Pulmonology Expert | `predict_lung_sound` |
+| Neurology Expert | `predict_parkinson`, `predict_stress_ans` |
+| Dermatology Expert | `predict_skin_disease` |
+| Obstetrics Expert | `predict_fetal_health`, `predict_preterm_labour` |
+| Ocular Expert | `predict_retinal_disease`, `predict_retinal_age` |
+| General Physician | (synthesises specialist outputs — no direct ML tool) |
+
+Each tool resolves the latest trained-model artifact via
+`registry.trained_model_path(slug)`, projects the live SQLite snapshot into
+the pipeline's expected feature columns (per-slug map in
+`model_tools._features_for`), runs `ModelEstimator.predict`, and returns a
+JSON string the agent can read.
+
+When a pipeline hasn't been trained yet, the tool returns
+`{"status": "model_unavailable", "hint": "cd models/<slug> && python main.py"}`
+so the graphs degrade gracefully instead of raising.
