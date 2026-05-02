@@ -58,13 +58,30 @@ Each component consumes the previous component's `*Artifact` dataclass and retur
 
 ## Quick start
 
+### Train a single pipeline
+
 ```bash
 cd models/<pipeline>
-python main.py                                                    # train end-to-end (preferred)
-python -m src.pipeline.training_pipeline                          # equivalent to above
+python main.py                                                    # train end-to-end
+python -m src.pipeline.training_pipeline                          # equivalent
 python -m src.pipeline.batch_prediction --input x.csv --output y.csv
 uvicorn app:app --port 8001                                       # serve as microservice
 ```
+
+### Train every pipeline at once
+
+From the repo root:
+
+```bash
+python train_all.py                       # all 12 pipelines, .env auto-loaded
+python train_all.py --large               # also runs the LARGE-gated ones (PTB-XL etc.)
+python train_all.py --only fetal_health,parkinson_screener
+python train_all.py --skip ecg_arrhythmia,cardiac_age
+```
+
+`train_all.py` reads the root `.env` (Kaggle / HF / Synapse creds + `MEDVERSE_FETCH_LARGE`)
+and propagates it to every subprocess, prints a per-pipeline status table at the end,
+and writes `train_all_results.json` with full details (test metrics + saved-model paths).
 
 `main.py` is the canonical training trigger — every pipeline has an identical
 copy that walks DataIngestion → DataValidation → DataTransformation →
