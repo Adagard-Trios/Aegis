@@ -67,7 +67,7 @@ function FeatureCard({
   desc,
   delay,
 }: {
-  icon: React.ElementType;
+  icon: React.ComponentType<{ className?: string; color?: string; size?: number }>;
   title: string;
   desc: string;
   delay: string;
@@ -110,7 +110,7 @@ function StepCard({
 }
 
 // ── Specialty pill ────────────────────────────────────────────────
-function Pill({ icon: Icon, label }: { icon: React.ElementType; label: string }) {
+function Pill({ icon: Icon, label }: { icon: React.ComponentType<{ className?: string; color?: string; size?: number }>; label: string }) {
   return (
     <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-white/10 bg-white/5 text-xs text-muted-foreground hover:border-primary/40 hover:text-primary transition-all duration-200">
       <Icon className="w-3 h-3" />

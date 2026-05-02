@@ -1,14 +1,14 @@
 "use client";
 
-import DashboardLayout from "../components/DashboardLayout";
-import { DashboardHeader, VestStatusCard } from "../components/DashboardHeader";
-import { SystemSummary } from "../components/SystemSummary";
-import { BiometricGrid } from "../components/BiometricGrid";
-import { LiveWaveforms } from "../components/LiveWaveforms";
-import { ExpertSummaryCards } from "../components/ExpertSummaryCards";
-import { MedVerseDigitalTwin } from "../components/MedVerseDigitalTwin";
-import { SimulationControls } from "../components/SimulationControls";
-import { useVestStream } from "../hooks/useVestStream";
+import DashboardLayout from "../../components/DashboardLayout";
+import { DashboardHeader, VestStatusCard } from "../../components/DashboardHeader";
+import { SystemSummary } from "../../components/SystemSummary";
+import { BiometricGrid } from "../../components/BiometricGrid";
+import { LiveWaveforms } from "../../components/LiveWaveforms";
+import { ExpertSummaryCards } from "../../components/ExpertSummaryCards";
+import { MedVerseDigitalTwin } from "../../components/MedVerseDigitalTwin";
+import { SimulationControls } from "../../components/SimulationControls";
+import { useVestStream } from "../../hooks/useVestStream";
 import { Radio, Shield, Stethoscope } from "lucide-react";
 
 export default function DoctorDashboard() {

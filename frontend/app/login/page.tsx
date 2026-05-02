@@ -21,7 +21,7 @@ export default function LoginPage() {
     try {
       const res = await login(username, password);
       // Route by role if present in response, otherwise go to doctor dashboard
-      const role = (res as Record<string, unknown>).role as string | undefined;
+      const role = (res as unknown as Record<string, unknown>).role as string | undefined;
       if (role === "patient") router.replace("/dashboard/patient");
       else router.replace("/dashboard/doctor");
     } catch (err: unknown) {

@@ -7,15 +7,15 @@ import {
   Settings, LogOut, Shield, Wifi, WifiOff, AlertTriangle,
   Stethoscope, History,
 } from "lucide-react";
-import { useVestStream } from "../hooks/useVestStream";
-import { useAuth } from "../hooks/useAuth";
-import { fetchAlerts, type Alert } from "../lib/api";
+import { useVestStream } from "../../hooks/useVestStream";
+import { useAuth } from "../../hooks/useAuth";
+import { fetchAlerts, type Alert } from "../../lib/api";
 
 function VitalTile({
   label, value, unit, icon: Icon, color, normal,
 }: {
   label: string; value: string | number; unit: string;
-  icon: React.ElementType; color: string; normal?: boolean;
+  icon: React.ComponentType<{ className?: string; color?: string; size?: number }>; color: string; normal?: boolean;
 }) {
   return (
     <div className="relative flex flex-col gap-3 p-5 rounded-2xl border border-white/10 bg-white/5 backdrop-blur-sm overflow-hidden group hover:border-primary/30 transition-all duration-300">
