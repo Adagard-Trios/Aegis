@@ -55,3 +55,14 @@ until you fill it in.
 Skeleton scaffold — implement the stub methods marked `NotImplementedError` to
 make the pipeline runnable end-to-end. The skeleton's logger, exception wrapper,
 config/artifact dataclasses, and orchestrator are ready to use as-is.
+
+## Data
+
+- **Dataset:** ODIR-5K — ocular image database with 8 disease categories
+- **Source:** Kaggle `jeftaadriel/oia-odir-dataset`
+- **Auth:** `KAGGLE_USERNAME` + `KAGGLE_KEY` in `.env`
+- **Size:** ~3.5 GB
+- **Cache:** `data/odir/`
+- **Auto-download:** yes (when creds set)
+
+`_load_dataframe` returns metadata with `age`, `target`, and `image_path`. An image trainer override is needed to actually consume the JPEGs.

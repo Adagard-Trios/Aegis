@@ -55,3 +55,15 @@ until you fill it in.
 Skeleton scaffold — implement the stub methods marked `NotImplementedError` to
 make the pipeline runnable end-to-end. The skeleton's logger, exception wrapper,
 config/artifact dataclasses, and orchestrator are ready to use as-is.
+
+## Data
+
+- **Dataset:** HAM10000 (Kaggle `kmader/skin-cancer-mnist-ham10000`) — 10K dermoscopic images
+- **Source:** Kaggle API
+- **Auth:** `KAGGLE_USERNAME` + `KAGGLE_KEY` in `.env`
+- **Size:** ~1 GB
+- **Cache:** `data/ham10000/`
+- **Auto-download:** yes (when creds set)
+- **Optional ISIC 2024:** `kaggle competitions download -c isic-2024-challenge` behind `MEDVERSE_FETCH_LARGE=true` (~25 GB).
+
+The ingestion stage produces a metadata DataFrame with `image_path` + `target` (dx label) + `age` columns. The default tabular trainer uses age only; an image trainer should override `DataTransformation` to load `image_path` lazily.

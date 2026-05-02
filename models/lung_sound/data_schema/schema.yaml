@@ -1,20 +1,13 @@
-# Input/output schema for Lung Sound Analyser.
-# Fill in the columns expected by the pipeline. Used by
-# src/components/data_validation.py to enforce a contract before training
-# or batch prediction.
-
 inputs:
-  # - name: feature_1
-  #   dtype: float64
-  # - name: feature_2
-  #   dtype: int64
+  - { name: duration_s, dtype: float64 }
+  - { name: rms,        dtype: float64 }
+  - { name: zcr,        dtype: float64 }
+  - { name: p95,        dtype: float64 }
+  - { name: p05,        dtype: float64 }
 
 target:
-  # name: label
-  # dtype: int64
+  name: target           # diagnosis label (Healthy, COPD, Asthma, …)
+  dtype: object
 
-# Optional list of categorical columns for one-hot / label encoding.
 categorical: []
-
-# Optional drift-monitoring tolerance per feature (KS p-value threshold).
 drift_tolerance: 0.05

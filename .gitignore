@@ -24,5 +24,12 @@ models/**/*.pth
 models/**/*.onnx
 models/**/*.tflite
 
+# Per-pipeline dataset cache + run artefacts
+models/*/data/
+models/*/artifacts/
+models/*/saved_models/
+models/*/logs/
+models/*/mlruns/
+
 # Alembic-managed Postgres / Timescale credentials
 alembic.local.ini

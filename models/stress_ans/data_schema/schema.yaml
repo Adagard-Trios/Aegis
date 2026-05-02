@@ -1,20 +1,15 @@
-# Input/output schema for Stress / ANS Classifier.
-# Fill in the columns expected by the pipeline. Used by
-# src/components/data_validation.py to enforce a contract before training
-# or batch prediction.
-
 inputs:
-  # - name: feature_1
-  #   dtype: float64
-  # - name: feature_2
-  #   dtype: int64
+  - { name: hr_mean,    dtype: float64 }
+  - { name: hr_std,     dtype: float64 }
+  - { name: hrv_rmssd,  dtype: float64 }
+  - { name: br_mean,    dtype: float64 }
+  - { name: eda_mean,   dtype: float64 }
+  - { name: eda_peaks,  dtype: float64 }
+  - { name: temp_mean,  dtype: float64 }
 
 target:
-  # name: label
-  # dtype: int64
+  name: target           # 0=baseline 1=stress 2=amusement
+  dtype: int64
 
-# Optional list of categorical columns for one-hot / label encoding.
 categorical: []
-
-# Optional drift-monitoring tolerance per feature (KS p-value threshold).
 drift_tolerance: 0.05

@@ -55,3 +55,12 @@ until you fill it in.
 Skeleton scaffold — implement the stub methods marked `NotImplementedError` to
 make the pipeline runnable end-to-end. The skeleton's logger, exception wrapper,
 config/artifact dataclasses, and orchestrator are ready to use as-is.
+
+## Data
+
+- **Dataset:** PTB-XL (21K records, age regression)
+- **Source:** PhysioNet — https://physionet.org/files/ptb-xl/1.0.3/
+- **Auth:** none
+- **Size:** **~25 GB** — gated by `MEDVERSE_FETCH_LARGE=true`
+- **Cache:** `data/ptbxl/`
+- **Auto-download:** no — set `MEDVERSE_FETCH_LARGE=true` in `.env` first.

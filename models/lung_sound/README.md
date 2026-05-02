@@ -55,3 +55,12 @@ until you fill it in.
 Skeleton scaffold — implement the stub methods marked `NotImplementedError` to
 make the pipeline runnable end-to-end. The skeleton's logger, exception wrapper,
 config/artifact dataclasses, and orchestrator are ready to use as-is.
+
+## Data
+
+- **Dataset:** ICBHI 2017 Respiratory Sound Database (~920 wav cycles)
+- **Source:** Kaggle `vbookshelf/respiratory-sound-database` (when `KAGGLE_*` set) — falls back to direct ZIP at `bhichallenge.med.auth.gr` otherwise.
+- **Auth:** none required (Kaggle optional for faster mirror)
+- **Size:** ~600 MB
+- **Cache:** `data/icbhi/`
+- **Auto-download:** yes

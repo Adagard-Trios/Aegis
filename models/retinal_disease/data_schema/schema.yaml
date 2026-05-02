@@ -1,20 +1,10 @@
-# Input/output schema for Retinal Disease Classifier.
-# Fill in the columns expected by the pipeline. Used by
-# src/components/data_validation.py to enforce a contract before training
-# or batch prediction.
-
 inputs:
-  # - name: feature_1
-  #   dtype: float64
-  # - name: feature_2
-  #   dtype: int64
+  - { name: age,        dtype: float64 }
+  - { name: image_path, dtype: object }
 
 target:
-  # name: label
-  # dtype: int64
+  name: target           # diagnosis category
+  dtype: object
 
-# Optional list of categorical columns for one-hot / label encoding.
 categorical: []
-
-# Optional drift-monitoring tolerance per feature (KS p-value threshold).
 drift_tolerance: 0.05

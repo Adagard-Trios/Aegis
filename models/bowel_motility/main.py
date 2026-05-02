@@ -5,8 +5,8 @@ Run from the pipeline root:
     cd models/<pipeline_slug>
     python main.py
 
-This walks the four components in sequence — DataIngestion → DataValidation
-→ DataTransformation → ModelTrainer — wrapping every stage in the
+This walks the four components in sequence — DataIngestion -> DataValidation
+-> DataTransformation -> ModelTrainer — wrapping every stage in the
 MedVerseException so failures surface with the file + line that caused them.
 
 Equivalent to `python -m src.pipeline.training_pipeline`, but keeps the
@@ -14,7 +14,23 @@ explicit step-by-step logging that's useful when you're filling in stubs.
 """
 from __future__ import annotations
 
+import os
 import sys
+
+# Make the repo-root pipeline_utils.py importable while running from this
+# pipeline's directory. (cwd-then-repo-root keeps the local `src` package
+# winning the namespace race.)
+_REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+if _REPO_ROOT not in sys.path:
+    sys.path.append(_REPO_ROOT)
+
+# Load .env (Groq keys, KAGGLE_*, HF_TOKEN, MEDVERSE_FETCH_LARGE) before
+# any component imports try to read them.
+try:
+    from dotenv import load_dotenv
+    load_dotenv(os.path.join(_REPO_ROOT, ".env"))
+except ImportError:
+    pass
 
 from src.components.data_ingestion import DataIngestion
 from src.components.data_validation import DataValidation
@@ -66,5 +82,5 @@ if __name__ == "__main__":
         print(model_trainer_artifact)
         logging.info("Model training artifact created")
 
-    except Exception as e:  # noqa: BLE001 — wrap-and-rethrow pattern
+    except Exception as e:
         raise MedVerseException(e, sys) from e

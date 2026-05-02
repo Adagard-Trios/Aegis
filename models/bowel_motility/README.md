@@ -55,3 +55,12 @@ until you fill it in.
 Skeleton scaffold — implement the stub methods marked `NotImplementedError` to
 make the pipeline runnable end-to-end. The skeleton's logger, exception wrapper,
 config/artifact dataclasses, and orchestrator are ready to use as-is.
+
+## Data
+
+- **Dataset:** synthetic (no public real dataset available; the source notebook itself only uses a generator).
+- **Default:** deterministic NumPy generator producing 2000 rows × 12 features over 4 channels.
+- **Real-data hook:** override `_load_dataframe` in `src/components/data_ingestion.py` if a clinical motility dataset becomes available.
+- **Auth:** none
+- **Cache:** n/a (data is generated each run)
+- **Auto-download:** synthetic only.

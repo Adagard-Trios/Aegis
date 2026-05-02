@@ -55,3 +55,12 @@ until you fill it in.
 Skeleton scaffold — implement the stub methods marked `NotImplementedError` to
 make the pipeline runnable end-to-end. The skeleton's logger, exception wrapper,
 config/artifact dataclasses, and orchestrator are ready to use as-is.
+
+## Data
+
+- **Dataset:** ECG-ID Database (90 subjects × 20-second ECG)
+- **Source:** PhysioNet — https://physionet.org/files/ecgiddb/1.0.0/
+- **Auth:** none
+- **Size:** ~100 MB
+- **Cache:** `data/ecgid/`
+- **Auto-download:** yes (on first `python main.py`)

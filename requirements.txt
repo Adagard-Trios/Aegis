@@ -45,3 +45,16 @@ psycopg2-binary>=2.9
 # ── Federated learning (optional — only needed for src/federated/) ─────────
 # flwr>=1.10
 # torch>=2.2
+
+# ── ML model pipelines (under models/<slug>/) ──────────────────────────────
+pandas>=2.0
+scikit-learn>=1.4
+PyYAML>=6.0
+requests>=2.31
+tqdm>=4.66
+openpyxl>=3.1            # UCI CTG.xls reader
+wfdb>=4.1                # PhysioNet record reader
+kaggle>=1.6              # Kaggle dataset Python API
+datasets>=2.18           # HuggingFace datasets
+huggingface_hub>=0.21    # HF Hub file/weights download
+synapseclient>=4.0       # WearGait-PD (Parkinson gait dataset)

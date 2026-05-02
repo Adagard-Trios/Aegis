@@ -93,6 +93,35 @@ Each raises `NotImplementedError` until you fill it in, so an unconfigured pipel
 [registry.py](registry.py) lists every pipeline so the main FastAPI backend
 (`src/ml/`) and ops scripts can iterate without hardcoding paths.
 
+## Datasets + credentials
+
+Every pipeline downloads its dataset on first `python main.py` and caches it
+under `models/<slug>/data/` (gitignored). Helper functions live in
+[`pipeline_utils.py`](../pipeline_utils.py) at the repo root.
+
+**Default behaviour (no env config needed):**
+- PhysioNet datasets (ECG-ID, TPEHGDB) — auto-download.
+- UCI tabular sources (Parkinsons voice, CTG.xls) — auto-download.
+- ICBHI lung-sound — auto-download from the direct mirror.
+- Synthetic-only pipelines (`bowel_motility`, `stress_ans`) — generate locally.
+
+**Env-gated datasets** (set in root `.env`):
+
+| Variable | Required by | Get it at |
+|---|---|---|
+| `KAGGLE_USERNAME` + `KAGGLE_KEY` | `skin_disease`, `retinal_disease`, `retinal_age` | https://www.kaggle.com/settings/account |
+| `HF_TOKEN` | `retinal_age` (RETFound weights) | https://huggingface.co/settings/tokens |
+| `SYNAPSE_AUTH_TOKEN` | `parkinson_screener` (WearGait gait — voice still works without it) | https://www.synapse.org/Profile:Tokens |
+| `MEDVERSE_FETCH_LARGE=true` | `ecg_arrhythmia`, `cardiac_age` (PTB-XL 25 GB), and ISIC 2024 inside `skin_disease` | n/a |
+| `WESAD_ROOT` | `stress_ans` (real path; default = synthetic) | https://uni-siegen.de/life/home/ (registration) |
+
+When a credential is missing, the pipeline raises `DatasetUnavailable` with a
+clear hint string telling the user exactly which env var to set. No silent
+fallbacks.
+
+The full reference of dataset → cache path → auth lives in each pipeline's
+own `<slug>/README.md` "Data" section.
+
 ## LangGraph tool integration
 
 Every trained pipeline is exposed as a LangChain `@tool` in

@@ -55,3 +55,12 @@ until you fill it in.
 Skeleton scaffold — implement the stub methods marked `NotImplementedError` to
 make the pipeline runnable end-to-end. The skeleton's logger, exception wrapper,
 config/artifact dataclasses, and orchestrator are ready to use as-is.
+
+## Data
+
+- **Dataset:** WESAD (Wearable Stress + Affect Detection) — requires email registration at uni-siegen.de.
+- **Default:** synthetic generator from the source notebook (3000 rows, deterministic).
+- **Real-data hook:** set `WESAD_ROOT=/path/to/extracted/wesad` after registering. Real-data parser is a follow-up.
+- **Auth:** email registration (real path only)
+- **Cache:** n/a (synthetic) / `WESAD_ROOT` (real)
+- **Auto-download:** synthetic only.

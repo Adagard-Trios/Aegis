@@ -55,3 +55,12 @@ until you fill it in.
 Skeleton scaffold — implement the stub methods marked `NotImplementedError` to
 make the pipeline runnable end-to-end. The skeleton's logger, exception wrapper,
 config/artifact dataclasses, and orchestrator are ready to use as-is.
+
+## Data
+
+- **Dataset:** ODIR-5K (Kaggle `jeftaadriel/oia-odir-dataset`) for fundus images.
+- **Auxiliary:** RETFound MAE encoder weights (`rmaphoh/RETFound_MAE` on HuggingFace, file `RETFound_mae_natureCFP.pth`).
+- **Auth:** `KAGGLE_USERNAME`, `KAGGLE_KEY`, plus `HF_TOKEN` for the encoder.
+- **Size:** 3.5 GB images + 4 GB weights.
+- **Cache:** `data/odir/` and `data/retfound/`
+- **Auto-download:** yes (when creds set). RETFound is best-effort — pipeline still trains tabular features if HF unavailable.

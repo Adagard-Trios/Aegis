@@ -55,3 +55,13 @@ until you fill it in.
 Skeleton scaffold — implement the stub methods marked `NotImplementedError` to
 make the pipeline runnable end-to-end. The skeleton's logger, exception wrapper,
 config/artifact dataclasses, and orchestrator are ready to use as-is.
+
+## Data
+
+- **Default dataset:** UCI Parkinsons voice (195 voice recordings, 22 features)
+- **Source:** https://archive.ics.uci.edu/ml/machine-learning-databases/parkinsons/parkinsons.data
+- **Auth:** none
+- **Size:** ~5 MB
+- **Cache:** `data/voice/`
+- **Auto-download:** yes
+- **Optional gait:** WearGait-PD on Synapse (`syn52540892`). Set `SYNAPSE_AUTH_TOKEN` in `.env` to pull it; the pipeline downloads but does not yet feature-fuse it (TODO).

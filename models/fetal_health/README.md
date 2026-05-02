@@ -55,3 +55,13 @@ until you fill it in.
 Skeleton scaffold — implement the stub methods marked `NotImplementedError` to
 make the pipeline runnable end-to-end. The skeleton's logger, exception wrapper,
 config/artifact dataclasses, and orchestrator are ready to use as-is.
+
+## Data
+
+- **Default dataset:** UCI Cardiotocography (CTG.xls — 2126 records, 22 features)
+- **Source:** https://archive.ics.uci.edu/ml/machine-learning-databases/00193/CTG.xls
+- **Auth:** none
+- **Size:** ~2 MB
+- **Cache:** `data/uci/`
+- **Auto-download:** yes
+- **Optional waveforms:** CTU-UHB CTG database (PhysioNet, ~500 MB) when `MEDVERSE_FETCH_LARGE=true`.

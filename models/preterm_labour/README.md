@@ -55,3 +55,13 @@ until you fill it in.
 Skeleton scaffold — implement the stub methods marked `NotImplementedError` to
 make the pipeline runnable end-to-end. The skeleton's logger, exception wrapper,
 config/artifact dataclasses, and orchestrator are ready to use as-is.
+
+## Data
+
+- **Dataset:** TPEHGDB (term-preterm EHG database, ~300 records)
+- **Source:** PhysioNet — https://physionet.org/files/tpehgdb/1.0.1/
+- **Auth:** none
+- **Size:** ~500 MB
+- **Cache:** `data/tpehgdb/`
+- **Auto-download:** yes
+- **Label rule:** preterm if recording was made before 37 weeks gestation (extracted from each record's header comments).
