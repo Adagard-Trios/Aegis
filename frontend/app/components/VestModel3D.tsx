@@ -1,27 +1,37 @@
 "use client";
 
-import { useRef, useMemo, useState, useCallback, Suspense } from "react";
-import { Canvas, useFrame, extend } from "@react-three/fiber";
-import { OrbitControls, Float, MeshTransmissionMaterial } from "@react-three/drei";
+/**
+ * MedVerse vest — fully procedural, no .glb assets.
+ *
+ * Construction:
+ *   - Front + back torso panels: parametric BufferGeometry (curved to a
+ *     human torso, not flat boxes).
+ *   - Shoulder yokes: TubeGeometry along CatmullRomCurve3.
+ *   - Side / cummerbund panels: small extruded shapes with bevels.
+ *   - Control module (the ESP32-S3 brain): rounded-corner extrusion +
+ *     emissive screen + status LED strip.
+ *   - Sensor pads: LatheGeometry for the housing + glowing dome on top.
+ *   - MOLLE webbing: array of small TubeGeometry segments.
+ *   - Cable runs: TubeGeometry connecting modules.
+ *   - Quick-release buckle: lathe profile + cross-bar.
+ *
+ * Two exports:
+ *   - VestScene({ onSensorHover }) — the bare 3D content. Drop into any
+ *     parent <Canvas /> (used by HeroCanvas + VestSectionCanvas).
+ *   - VestModel3D() — self-contained with its own <Canvas /> + DOM
+ *     overlays (tooltip, thermal scale, controls hint). Used on
+ *     /vest-viewer.
+ */
+
+import React, { Suspense, useCallback, useMemo, useRef, useState } from "react";
+import { Canvas, useFrame } from "@react-three/fiber";
+import { OrbitControls, Environment, Float } from "@react-three/drei";
 import * as THREE from "three";
 
-/* ═══════════════════════════════════════════════════
-   SENSOR DATA — thermal zones
-   ═══════════════════════════════════════════════════ */
 
-const SENSOR_ZONES = [
-  { id: "chest-center", label: "Chest Core", pos: [0, 0.05, 0.19] as [number, number, number], temp: 37.1 },
-  { id: "chest-left", label: "Left Pectoral", pos: [-0.13, 0.12, 0.18] as [number, number, number], temp: 36.8 },
-  { id: "chest-right", label: "Right Pectoral", pos: [0.13, 0.12, 0.18] as [number, number, number], temp: 36.9 },
-  { id: "abdomen-left", label: "Left Abdomen", pos: [-0.11, -0.15, 0.17] as [number, number, number], temp: 37.4 },
-  { id: "abdomen-right", label: "Right Abdomen", pos: [0.11, -0.15, 0.17] as [number, number, number], temp: 36.7 },
-  { id: "upper-back", label: "Upper Spine", pos: [0, 0.2, -0.18] as [number, number, number], temp: 36.5 },
-  { id: "lower-back", label: "Lower Back", pos: [0, -0.1, -0.19] as [number, number, number], temp: 37.6 },
-  { id: "shoulder-left", label: "Left Shoulder", pos: [-0.22, 0.38, 0] as [number, number, number], temp: 35.9 },
-  { id: "shoulder-right", label: "Right Shoulder", pos: [0.22, 0.38, 0] as [number, number, number], temp: 36.0 },
-  { id: "left-rib", label: "Left Rib Cage", pos: [-0.23, 0.0, 0.05] as [number, number, number], temp: 36.6 },
-  { id: "right-rib", label: "Right Rib Cage", pos: [0.23, 0.0, 0.05] as [number, number, number], temp: 36.5 },
-];
+// ═══════════════════════════════════════════════════════════════════════════
+// Color helpers
+// ═══════════════════════════════════════════════════════════════════════════
 
 function tempToColor(temp: number): THREE.Color {
   const t = Math.max(0, Math.min(1, (temp - 35.0) / 3.5));
@@ -30,717 +40,622 @@ function tempToColor(temp: number): THREE.Color {
   return new THREE.Color().lerpColors(new THREE.Color(0xffbb00), new THREE.Color(0xff2200), (t - 0.66) / 0.34);
 }
 
-/* ═══════════════════════════════════════════════════
-   FUTURISTIC SENSOR NODE — multi-ring holographic
-   ═══════════════════════════════════════════════════ */
 
-function SensorNode({
-  pos, temp, label, onHover,
+// ═══════════════════════════════════════════════════════════════════════════
+// Materials — defined once, referenced everywhere for memory
+// ═══════════════════════════════════════════════════════════════════════════
+
+const MAT = {
+  carbon: { color: "#0a0d12", roughness: 0.55, metalness: 0.05, clearcoat: 0.55, clearcoatRoughness: 0.25 } as const,
+  carbonAccent: { color: "#15171d", roughness: 0.45, metalness: 0.1, clearcoat: 0.6, clearcoatRoughness: 0.2 } as const,
+  strap: { color: "#0f1115", roughness: 0.92, metalness: 0.0 } as const,
+  metal: { color: "#2a2e36", roughness: 0.25, metalness: 0.9 } as const,
+  metalDark: { color: "#1a1d23", roughness: 0.35, metalness: 0.85 } as const,
+  screen: { color: "#06121f", emissive: "#1a4d7a", emissiveIntensity: 0.6, roughness: 0.1, metalness: 0.0 } as const,
+};
+
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Curved torso panel — parametric BufferGeometry
+// (Front and back of the vest, curved like a human torso)
+// ═══════════════════════════════════════════════════════════════════════════
+
+function makeTorsoPanel({
+  width = 0.5,
+  height = 0.78,
+  curveDepth = 0.18,
+  segmentsX = 24,
+  segmentsY = 32,
+  cutNeck = true,
 }: {
-  pos: [number, number, number]; temp: number; label: string;
-  onHover: (label: string | null, temp: number) => void;
-}) {
-  const outerRef = useRef<THREE.Mesh>(null);
-  const innerRef = useRef<THREE.Mesh>(null);
-  const pulseRef = useRef<THREE.Mesh>(null);
-  const color = useMemo(() => tempToColor(temp), [temp]);
-  const [hovered, setHovered] = useState(false);
+  width?: number;
+  height?: number;
+  curveDepth?: number;
+  segmentsX?: number;
+  segmentsY?: number;
+  cutNeck?: boolean;
+}): THREE.BufferGeometry {
+  const positions: number[] = [];
+  const normals: number[] = [];
+  const uvs: number[] = [];
+  const indices: number[] = [];
 
-  useFrame(({ clock }) => {
-    const t = clock.elapsedTime;
-    if (outerRef.current) outerRef.current.rotation.z = t * 0.8;
-    if (innerRef.current) innerRef.current.rotation.z = -t * 1.2;
-    if (pulseRef.current) {
-      const s = 1 + Math.sin(t * 3) * 0.3;
-      pulseRef.current.scale.setScalar(s);
-      (pulseRef.current.material as THREE.MeshBasicMaterial).opacity = 0.12 - Math.sin(t * 3) * 0.06;
+  for (let j = 0; j <= segmentsY; j++) {
+    const v = j / segmentsY;
+    const y = (v - 0.5) * height;
+    for (let i = 0; i <= segmentsX; i++) {
+      const u = i / segmentsX;
+      const x = (u - 0.5) * width;
+      // Cylindrical curvature — front of vest bows outward
+      const xn = (u - 0.5) * 2; // -1..1
+      const z = curveDepth * (1 - xn * xn) * 0.6;
+      // Slight vertical taper at top + bottom to suggest shoulder + waist
+      const taper = 1 - 0.18 * Math.pow(Math.abs(v - 0.5) * 2, 3);
+      positions.push(x * taper, y, z);
+      // Approximate outward normal
+      const nx = xn * 0.7;
+      const nz = 1 - Math.abs(xn) * 0.5;
+      const len = Math.sqrt(nx * nx + nz * nz);
+      normals.push(nx / len, 0, nz / len);
+      uvs.push(u, v);
     }
-  });
+  }
 
-  return (
-    <group position={pos}>
-      {/* Expanding pulse sphere */}
-      <mesh ref={pulseRef}>
-        <sphereGeometry args={[0.05, 16, 16]} />
-        <meshBasicMaterial color={color} transparent opacity={0.08} depthWrite={false} />
-      </mesh>
-      {/* Outer ring */}
-      <mesh ref={outerRef}>
-        <torusGeometry args={[0.035, 0.0015, 6, 24]} />
-        <meshBasicMaterial color={color} transparent opacity={hovered ? 0.9 : 0.35} />
-      </mesh>
-      {/* Inner ring — counter-rotating */}
-      <mesh ref={innerRef}>
-        <torusGeometry args={[0.022, 0.001, 6, 16]} />
-        <meshBasicMaterial color={color} transparent opacity={hovered ? 0.7 : 0.2} />
-      </mesh>
-      {/* Core sphere — glowing */}
-      <mesh
-        onPointerOver={() => { setHovered(true); onHover(label, temp); document.body.style.cursor = "pointer"; }}
-        onPointerOut={() => { setHovered(false); onHover(null, 0); document.body.style.cursor = "auto"; }}
-      >
-        <sphereGeometry args={[hovered ? 0.018 : 0.012, 16, 16]} />
-        <meshStandardMaterial color={color} emissive={color} emissiveIntensity={hovered ? 5 : 2.5} toneMapped={false} />
-      </mesh>
-    </group>
-  );
+  const stride = segmentsX + 1;
+  for (let j = 0; j < segmentsY; j++) {
+    for (let i = 0; i < segmentsX; i++) {
+      const a = j * stride + i;
+      const b = a + 1;
+      const c = a + stride;
+      const d = c + 1;
+      // Skip the neck cutout — top center wedge
+      if (cutNeck) {
+        const uMid = (i + 0.5) / segmentsX;
+        const vTop = (j + 0.5) / segmentsY;
+        const inNeckCut = vTop > 0.86 && Math.abs(uMid - 0.5) < 0.16;
+        if (inNeckCut) continue;
+      }
+      indices.push(a, c, b, b, c, d);
+    }
+  }
+
+  const geom = new THREE.BufferGeometry();
+  geom.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+  geom.setAttribute("normal", new THREE.Float32BufferAttribute(normals, 3));
+  geom.setAttribute("uv", new THREE.Float32BufferAttribute(uvs, 2));
+  geom.setIndex(indices);
+  return geom;
 }
 
-/* ═══════════════════════════════════════════════════
-   ANIMATED DATA FLOW — light pulses along circuits
-   ═══════════════════════════════════════════════════ */
 
-function DataFlowLine({ points, speed = 1, color = "#00d4ff" }: {
-  points: THREE.Vector3[]; speed?: number; color?: string;
-}) {
-  const dotRef = useRef<THREE.Mesh>(null);
-  const trailRef = useRef<THREE.Mesh>(null);
-  const curve = useMemo(() => new THREE.CatmullRomCurve3(points), [points]);
+// ═══════════════════════════════════════════════════════════════════════════
+// Side / cummerbund panel — extruded shape with bevels
+// ═══════════════════════════════════════════════════════════════════════════
 
-  useFrame(({ clock }) => {
-    const t = ((clock.elapsedTime * speed * 0.15) % 1);
-    const pos = curve.getPoint(t);
-    if (dotRef.current) {
-      dotRef.current.position.copy(pos);
-    }
-    if (trailRef.current) {
-      const tBack = ((t - 0.03) + 1) % 1;
-      trailRef.current.position.copy(curve.getPoint(tBack));
-    }
-  });
-
-  const lineGeo = useMemo(() => {
-    const pts = curve.getPoints(60);
-    return new THREE.BufferGeometry().setFromPoints(pts);
-  }, [curve]);
-
-  return (
-    <group>
-      {/* @ts-expect-error R3F <line> intrinsic clashes with SVG namespace under React 19 types */}
-      <line geometry={lineGeo}>
-        <lineBasicMaterial color={color} transparent opacity={0.08} />
-      </line>
-      <mesh ref={dotRef}>
-        <sphereGeometry args={[0.006, 8, 8]} />
-        <meshBasicMaterial color={color} transparent opacity={0.9} toneMapped={false} />
-      </mesh>
-      <mesh ref={trailRef}>
-        <sphereGeometry args={[0.004, 6, 6]} />
-        <meshBasicMaterial color={color} transparent opacity={0.4} />
-      </mesh>
-    </group>
-  );
-}
-
-/* ═══════════════════════════════════════════════════
-   FLOATING PARTICLES — ambient tech atmosphere
-   ═══════════════════════════════════════════════════ */
-
-function FloatingParticles({ count = 80 }: { count?: number }) {
-  const meshRef = useRef<THREE.InstancedMesh>(null);
-  const dummy = useMemo(() => new THREE.Object3D(), []);
-  const speeds = useMemo(() => Array.from({ length: count }, () => ({
-    x: (Math.random() - 0.5) * 0.8,
-    y: (Math.random() - 0.5) * 1.2,
-    z: (Math.random() - 0.5) * 0.8,
-    speed: 0.1 + Math.random() * 0.3,
-    phase: Math.random() * Math.PI * 2,
-  })), [count]);
-
-  useFrame(({ clock }) => {
-    if (!meshRef.current) return;
-    speeds.forEach((s, i) => {
-      const t = clock.elapsedTime * s.speed + s.phase;
-      dummy.position.set(
-        s.x + Math.sin(t * 0.7) * 0.15,
-        s.y + Math.sin(t * 0.5) * 0.2,
-        s.z + Math.cos(t * 0.4) * 0.15,
-      );
-      const scale = 0.002 + Math.sin(t * 2) * 0.001;
-      dummy.scale.setScalar(scale);
-      dummy.updateMatrix();
-      meshRef.current!.setMatrixAt(i, dummy.matrix);
-    });
-    meshRef.current.instanceMatrix.needsUpdate = true;
-  });
-
-  return (
-    <instancedMesh ref={meshRef} args={[undefined, undefined, count]}>
-      <sphereGeometry args={[1, 4, 4]} />
-      <meshBasicMaterial color="#00d4ff" transparent opacity={0.4} toneMapped={false} />
-    </instancedMesh>
-  );
-}
-
-/* ═══════════════════════════════════════════════════
-   SCANNING LINE — sweeping holographic scan
-   ═══════════════════════════════════════════════════ */
-
-function ScanLine() {
-  const ref = useRef<THREE.Mesh>(null);
-
-  useFrame(({ clock }) => {
-    if (ref.current) {
-      const t = clock.elapsedTime;
-      // Sweeps up and down over 4 seconds
-      const y = Math.sin(t * 0.8) * 0.45;
-      ref.current.position.y = y;
-      (ref.current.material as THREE.MeshBasicMaterial).opacity = 0.04 + Math.abs(Math.cos(t * 0.8)) * 0.04;
-    }
-  });
-
-  return (
-    <mesh ref={ref} position={[0, 0, 0.01]}>
-      <planeGeometry args={[0.6, 0.008]} />
-      <meshBasicMaterial color="#00d4ff" transparent opacity={0.06} side={THREE.DoubleSide} depthWrite={false} />
-    </mesh>
-  );
-}
-
-/* ═══════════════════════════════════════════════════
-   VEST TORSO SHAPE BUILDER
-   ═══════════════════════════════════════════════════ */
-
-function createTorsoShape(wTop: number, wBot: number, h: number, waistNarrow: number): THREE.Shape {
+function makeSidePanel(): THREE.ExtrudeGeometry {
   const shape = new THREE.Shape();
-  const ht = h / 2, wt = wTop / 2, wb = wBot / 2;
-  const wm = (wt + wb) / 2 - waistNarrow;
+  shape.moveTo(-0.06, 0.2);
+  shape.lineTo(0.06, 0.2);
+  shape.lineTo(0.07, 0);
+  shape.lineTo(0.06, -0.2);
+  shape.lineTo(-0.06, -0.2);
+  shape.lineTo(-0.07, 0);
+  shape.closePath();
+  return new THREE.ExtrudeGeometry(shape, {
+    depth: 0.13,
+    bevelEnabled: true,
+    bevelSize: 0.008,
+    bevelThickness: 0.006,
+    bevelSegments: 3,
+  });
+}
 
-  shape.moveTo(-wb, -ht);
-  shape.lineTo(wb, -ht);
-  shape.bezierCurveTo(wb + 0.01, -ht * 0.3, wm + 0.01, -ht * 0.1, wm, 0);
-  shape.bezierCurveTo(wm + 0.01, ht * 0.2, wt - 0.01, ht * 0.6, wt, ht);
-  shape.bezierCurveTo(wt * 0.7, ht + 0.02, wt * 0.3, ht + 0.03, 0, ht + 0.01);
-  shape.bezierCurveTo(-wt * 0.3, ht + 0.03, -wt * 0.7, ht + 0.02, -wt, ht);
-  shape.bezierCurveTo(-wt + 0.01, ht * 0.6, -wm - 0.01, ht * 0.2, -wm, 0);
-  shape.bezierCurveTo(-wm - 0.01, -ht * 0.1, -wb - 0.01, -ht * 0.3, -wb, -ht);
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Control module (ESP32-S3 brain) — rounded-rect extrusion + screen + LED strip
+// ═══════════════════════════════════════════════════════════════════════════
+
+function makeRoundedRect(w: number, h: number, r: number): THREE.Shape {
+  const shape = new THREE.Shape();
+  shape.moveTo(-w + r, -h);
+  shape.lineTo(w - r, -h);
+  shape.quadraticCurveTo(w, -h, w, -h + r);
+  shape.lineTo(w, h - r);
+  shape.quadraticCurveTo(w, h, w - r, h);
+  shape.lineTo(-w + r, h);
+  shape.quadraticCurveTo(-w, h, -w, h - r);
+  shape.lineTo(-w, -h + r);
+  shape.quadraticCurveTo(-w, -h, -w + r, -h);
   return shape;
 }
 
-/* ═══ Front panel — curved, multi-layered ═══ */
+function ControlModule({ position }: { position: [number, number, number] }) {
+  const ledRef = useRef<THREE.MeshStandardMaterial>(null);
+  const housingGeom = useMemo(() => new THREE.ExtrudeGeometry(
+    makeRoundedRect(0.13, 0.085, 0.018),
+    { depth: 0.022, bevelEnabled: true, bevelSize: 0.004, bevelThickness: 0.003, bevelSegments: 3 },
+  ), []);
 
-function FrontPanel() {
-  const geo = useMemo(() => {
-    const shape = createTorsoShape(0.36, 0.32, 0.72, 0.02);
-    const g = new THREE.ExtrudeGeometry(shape, {
-      depth: 0.028,
-      bevelEnabled: true,
-      bevelThickness: 0.006,
-      bevelSize: 0.006,
-      bevelSegments: 3,
-      curveSegments: 32,
-    });
-    const posAttr = g.getAttribute("position");
-    for (let i = 0; i < posAttr.count; i++) {
-      const x = posAttr.getX(i);
-      const z = posAttr.getZ(i);
-      posAttr.setZ(i, z + 0.09 * (1 - (x * x) / 0.04));
-    }
-    posAttr.needsUpdate = true;
-    g.computeVertexNormals();
-    return g;
-  }, []);
-
-  return (
-    <group>
-      {/* Main panel */}
-      <mesh geometry={geo} position={[0, 0, 0.08]}>
-        <meshPhysicalMaterial
-          color="#0c1628"
-          metalness={0.3}
-          roughness={0.6}
-          clearcoat={0.4}
-          clearcoatRoughness={0.3}
-          envMapIntensity={0.5}
-          side={THREE.DoubleSide}
-        />
-      </mesh>
-      {/* Outer shell — slight transparency for layered look */}
-      <mesh geometry={geo} position={[0, 0, 0.083]} scale={[1.01, 1.01, 0.3]}>
-        <meshPhysicalMaterial
-          color="#1a2a45"
-          metalness={0.2}
-          roughness={0.4}
-          transparent
-          opacity={0.35}
-          clearcoat={0.8}
-          clearcoatRoughness={0.1}
-          side={THREE.DoubleSide}
-        />
-      </mesh>
-    </group>
-  );
-}
-
-/* ═══ Back panel ═══ */
-
-function BackPanel() {
-  const geo = useMemo(() => {
-    const shape = createTorsoShape(0.34, 0.30, 0.74, 0.015);
-    const g = new THREE.ExtrudeGeometry(shape, {
-      depth: 0.024,
-      bevelEnabled: true,
-      bevelThickness: 0.005,
-      bevelSize: 0.005,
-      bevelSegments: 3,
-      curveSegments: 32,
-    });
-    const posAttr = g.getAttribute("position");
-    for (let i = 0; i < posAttr.count; i++) {
-      const x = posAttr.getX(i);
-      const z = posAttr.getZ(i);
-      posAttr.setZ(i, z - 0.07 * (1 - (x * x) / 0.035));
-    }
-    posAttr.needsUpdate = true;
-    g.computeVertexNormals();
-    return g;
-  }, []);
-
-  return (
-    <mesh geometry={geo} position={[0, 0, -0.13]} rotation={[0, Math.PI, 0]}>
-      <meshPhysicalMaterial
-        color="#0a1220"
-        metalness={0.25}
-        roughness={0.65}
-        clearcoat={0.3}
-        clearcoatRoughness={0.4}
-        side={THREE.DoubleSide}
-      />
-    </mesh>
-  );
-}
-
-/* ═══ Side panels ═══ */
-
-function SidePanel({ side }: { side: "left" | "right" }) {
-  const xSign = side === "left" ? -1 : 1;
-  const geo = useMemo(() => {
-    const shape = new THREE.Shape();
-    shape.moveTo(0, -0.36);
-    shape.lineTo(0.13, -0.36);
-    shape.bezierCurveTo(0.15, -0.1, 0.14, 0.1, 0.13, 0.36);
-    shape.lineTo(0, 0.36);
-    shape.bezierCurveTo(0.01, 0.1, 0.01, -0.1, 0, -0.36);
-    return new THREE.ExtrudeGeometry(shape, { depth: 0.018, bevelEnabled: false, curveSegments: 20 });
-  }, []);
-
-  return (
-    <mesh geometry={geo} position={[xSign * 0.16, 0, -0.08]} rotation={[0, (Math.PI / 2) * xSign, 0]}>
-      <meshPhysicalMaterial color="#0e1828" metalness={0.25} roughness={0.7} clearcoat={0.2} side={THREE.DoubleSide} />
-    </mesh>
-  );
-}
-
-/* ═══ Shoulder strap — contoured CatmullRom ═══ */
-
-function ShoulderStrap({ side }: { side: "left" | "right" }) {
-  const xSign = side === "left" ? -1 : 1;
-  const geo = useMemo(() => {
-    const curve = new THREE.CatmullRomCurve3([
-      new THREE.Vector3(xSign * 0.1, 0.37, 0.15),
-      new THREE.Vector3(xSign * 0.14, 0.45, 0.1),
-      new THREE.Vector3(xSign * 0.19, 0.51, 0.02),
-      new THREE.Vector3(xSign * 0.17, 0.49, -0.06),
-      new THREE.Vector3(xSign * 0.13, 0.39, -0.12),
-    ]);
-    const strapShape = new THREE.Shape();
-    strapShape.moveTo(-0.032, -0.009);
-    strapShape.lineTo(0.032, -0.009);
-    strapShape.lineTo(0.032, 0.009);
-    strapShape.lineTo(-0.032, 0.009);
-    strapShape.lineTo(-0.032, -0.009);
-    return new THREE.ExtrudeGeometry(strapShape, { steps: 40, extrudePath: curve });
-  }, [xSign]);
-
-  return (
-    <mesh geometry={geo}>
-      <meshPhysicalMaterial
-        color="#141f35"
-        metalness={0.35}
-        roughness={0.55}
-        clearcoat={0.5}
-        clearcoatRoughness={0.2}
-        side={THREE.DoubleSide}
-      />
-    </mesh>
-  );
-}
-
-/* ═══ Shoulder pad — ergonomic ═══ */
-
-function StrapPad({ side }: { side: "left" | "right" }) {
-  const xSign = side === "left" ? -1 : 1;
-  return (
-    <mesh position={[xSign * 0.18, 0.49, 0.01]} rotation={[0.1, 0, xSign * 0.15]}>
-      <boxGeometry args={[0.055, 0.13, 0.1]} />
-      <meshPhysicalMaterial color="#1a2840" roughness={0.85} metalness={0.08} clearcoat={0.1} />
-    </mesh>
-  );
-}
-
-/* ═══ MOLLE webbing ═══ */
-
-function MolleStrip({ position, width, height, rotY = 0 }: {
-  position: [number, number, number]; width: number; height: number; rotY?: number;
-}) {
-  const rows = Math.floor(height / 0.04);
-  return (
-    <group position={position} rotation={[0, rotY, 0]}>
-      {Array.from({ length: rows }, (_, i) => (
-        <group key={i}>
-          <mesh position={[0, i * 0.04 - height / 2, 0]}>
-            <boxGeometry args={[width, 0.014, 0.005]} />
-            <meshPhysicalMaterial color="#182a42" metalness={0.2} roughness={0.75} clearcoat={0.3} />
-          </mesh>
-          {Array.from({ length: Math.floor(width / 0.035) }, (_, j) => (
-            <mesh key={j} position={[j * 0.035 - width / 2 + 0.018, i * 0.04 - height / 2, 0.003]}>
-              <boxGeometry args={[0.018, 0.005, 0.003]} />
-              <meshStandardMaterial color="#0a1220" roughness={0.95} />
-            </mesh>
-          ))}
-        </group>
-      ))}
-    </group>
-  );
-}
-
-/* ═══ Glowing edge trim ═══ */
-
-function EdgeTrimLine({ points, color = "#00d4ff", intensity = 0.5 }: {
-  points: [number, number, number][]; color?: string; intensity?: number;
-}) {
-  const geo = useMemo(() => {
-    return new THREE.BufferGeometry().setFromPoints(points.map(p => new THREE.Vector3(...p)));
-  }, [points]);
-
-  return (
-    /* @ts-expect-error R3F <line> intrinsic clashes with SVG namespace under React 19 types */
-    <line geometry={geo}>
-      <lineBasicMaterial color={color} transparent opacity={intensity} />
-    </line>
-  );
-}
-
-/* ═══════════════════════════════════════════════════
-   FULL VEST ASSEMBLY
-   ═══════════════════════════════════════════════════ */
-
-function FuturisticVest() {
-  const groupRef = useRef<THREE.Group>(null);
-  const cyan = "#00d4ff";
-  const teal = "#00ffaa";
-
+  // Pulsing breathing for the LED strip
   useFrame(({ clock }) => {
-    if (groupRef.current) {
-      groupRef.current.rotation.y = Math.sin(clock.elapsedTime * 0.12) * 0.015;
+    if (ledRef.current) {
+      const t = clock.elapsedTime;
+      ledRef.current.emissiveIntensity = 0.7 + Math.sin(t * 1.6) * 0.5;
     }
   });
 
   return (
-    <group ref={groupRef}>
-      {/* === Structural panels === */}
-      <FrontPanel />
-      <BackPanel />
-      <SidePanel side="left" />
-      <SidePanel side="right" />
-
-      {/* === Shoulder straps === */}
-      <ShoulderStrap side="left" />
-      <ShoulderStrap side="right" />
-      <StrapPad side="left" />
-      <StrapPad side="right" />
-
-      {/* === Neckline ring === */}
-      <mesh position={[0, 0.39, 0]} rotation={[0.15, 0, 0]}>
-        <torusGeometry args={[0.13, 0.012, 8, 24, Math.PI * 2]} />
-        <meshPhysicalMaterial color="#0a1420" metalness={0.3} roughness={0.7} clearcoat={0.2} />
+    <group position={position}>
+      {/* Housing */}
+      <mesh geometry={housingGeom} castShadow receiveShadow>
+        <meshPhysicalMaterial {...MAT.carbonAccent} />
       </mesh>
-
-      {/* === MOLLE === */}
-      <MolleStrip position={[0, -0.05, 0.2]} width={0.22} height={0.3} />
-      <MolleStrip position={[0, -0.05, -0.2]} width={0.22} height={0.3} rotY={Math.PI} />
-
-      {/* === Glowing circuit traces — FRONT === */}
-      {[0.24, 0.12, 0.0, -0.1, -0.2].map((y, i) => (
-        <mesh key={`fh-${i}`} position={[0, y, 0.205]}>
-          <boxGeometry args={[0.2 - i * 0.008, 0.0015, 0.001]} />
-          <meshBasicMaterial color={cyan} transparent opacity={0.5} toneMapped={false} />
+      {/* Screen face */}
+      <mesh position={[0, 0.018, 0.024]}>
+        <planeGeometry args={[0.21, 0.11]} />
+        <meshStandardMaterial {...MAT.screen} />
+      </mesh>
+      {/* Screen bezel */}
+      <mesh position={[0, 0.018, 0.0235]}>
+        <ringGeometry args={[0.094, 0.105, 32]} />
+        <meshStandardMaterial {...MAT.metalDark} side={THREE.DoubleSide} />
+      </mesh>
+      {/* LED strip — bottom */}
+      <mesh ref={undefined} position={[0, -0.075, 0.024]}>
+        <boxGeometry args={[0.18, 0.005, 0.001]} />
+        <meshStandardMaterial ref={ledRef} color="#a855f7" emissive="#a855f7" emissiveIntensity={1.0} toneMapped={false} />
+      </mesh>
+      {/* Two screw heads */}
+      {[-0.115, 0.115].map((x) => (
+        <mesh key={x} position={[x, 0, 0.022]}>
+          <cylinderGeometry args={[0.006, 0.006, 0.003, 16]} />
+          <meshStandardMaterial {...MAT.metal} />
         </mesh>
       ))}
-      {[-0.08, -0.03, 0.03, 0.08].map((x, i) => (
-        <mesh key={`fv-${i}`} position={[x, 0.02, 0.205]}>
-          <boxGeometry args={[0.001, 0.42, 0.001]} />
-          <meshBasicMaterial color={cyan} transparent opacity={0.35} toneMapped={false} />
-        </mesh>
-      ))}
+    </group>
+  );
+}
 
-      {/* === Glowing circuit traces — BACK === */}
-      {[0.2, 0.08, -0.04, -0.16].map((y, i) => (
-        <mesh key={`bh-${i}`} position={[0, y, -0.205]}>
-          <boxGeometry args={[0.18 - i * 0.01, 0.0015, 0.001]} />
-          <meshBasicMaterial color={teal} transparent opacity={0.3} toneMapped={false} />
-        </mesh>
-      ))}
 
-      {/* === Animated data flow lines === */}
-      <DataFlowLine
-        points={[
-          new THREE.Vector3(-0.08, -0.25, 0.206),
-          new THREE.Vector3(-0.08, 0.0, 0.206),
-          new THREE.Vector3(-0.05, 0.15, 0.206),
-          new THREE.Vector3(0, 0.25, 0.206),
-        ]}
-        speed={1.2}
-        color={cyan}
-      />
-      <DataFlowLine
-        points={[
-          new THREE.Vector3(0.08, -0.25, 0.206),
-          new THREE.Vector3(0.08, 0.0, 0.206),
-          new THREE.Vector3(0.05, 0.15, 0.206),
-          new THREE.Vector3(0, 0.25, 0.206),
-        ]}
-        speed={0.9}
-        color={teal}
-      />
-      <DataFlowLine
-        points={[
-          new THREE.Vector3(0, -0.2, -0.206),
-          new THREE.Vector3(0, 0.05, -0.206),
-          new THREE.Vector3(0, 0.2, -0.206),
-        ]}
-        speed={0.7}
-        color={teal}
-      />
+// ═══════════════════════════════════════════════════════════════════════════
+// Sensor pad — lathe-revolved housing + glowing dome
+// ═══════════════════════════════════════════════════════════════════════════
 
-      {/* === Sensor pocket hexagons on front === */}
-      {([[-0.07, 0.1], [0.07, 0.1], [0, -0.05], [-0.07, -0.18], [0.07, -0.18]] as [number, number][]).map(([x, y], i) => (
-        <mesh key={`hex-${i}`} position={[x, y, 0.206]}>
-          <circleGeometry args={[0.02, 6]} />
-          <meshBasicMaterial color={cyan} transparent opacity={0.12} toneMapped={false} side={THREE.DoubleSide} />
-        </mesh>
-      ))}
+interface SensorSpec {
+  pos: [number, number, number];
+  label: string;
+  temp: number;
+  hue?: number; // optional override; defaults to temp-based color
+}
 
-      {/* === MedVerse emblem — glowing hexagon === */}
-      <mesh position={[0, 0.29, 0.208]}>
-        <circleGeometry args={[0.022, 6]} />
-        <meshBasicMaterial color="#ffffff" toneMapped={false} />
+function SensorPad({ spec, onHover }: { spec: SensorSpec; onHover: (s: SensorSpec | null) => void }) {
+  const domeRef = useRef<THREE.MeshStandardMaterial>(null);
+  const haloRef = useRef<THREE.Mesh>(null);
+  const [hovered, setHovered] = useState(false);
+
+  // Lathe profile — disc with a slight dome
+  const housingGeom = useMemo(() => {
+    const points = [
+      new THREE.Vector2(0, 0),
+      new THREE.Vector2(0.018, 0),
+      new THREE.Vector2(0.022, 0.004),
+      new THREE.Vector2(0.022, 0.012),
+      new THREE.Vector2(0.018, 0.014),
+      new THREE.Vector2(0.0, 0.016),
+    ];
+    return new THREE.LatheGeometry(points, 32);
+  }, []);
+
+  const color = useMemo(() => tempToColor(spec.temp), [spec.temp]);
+
+  useFrame(({ clock }) => {
+    const t = clock.elapsedTime;
+    if (domeRef.current) {
+      domeRef.current.emissiveIntensity = 0.4 + Math.sin(t * 2 + spec.pos[0] * 4) * 0.25 + (hovered ? 0.6 : 0);
+    }
+    if (haloRef.current) {
+      haloRef.current.scale.setScalar(1 + Math.sin(t * 2 + spec.pos[1] * 4) * 0.1 + (hovered ? 0.3 : 0));
+    }
+  });
+
+  return (
+    <group
+      position={spec.pos}
+      onPointerOver={(e) => { e.stopPropagation(); setHovered(true); onHover(spec); }}
+      onPointerOut={() => { setHovered(false); onHover(null); }}
+    >
+      {/* Housing */}
+      <mesh geometry={housingGeom}>
+        <meshPhysicalMaterial {...MAT.carbonAccent} />
       </mesh>
-      <mesh position={[0, 0.29, 0.207]}>
-        <circleGeometry args={[0.028, 6]} />
-        <meshBasicMaterial color={cyan} transparent opacity={0.4} toneMapped={false} />
+      {/* Glowing dome */}
+      <mesh position={[0, 0.018, 0]}>
+        <sphereGeometry args={[0.01, 16, 16]} />
+        <meshStandardMaterial
+          ref={domeRef}
+          color={`#${color.getHexString()}`}
+          emissive={`#${color.getHexString()}`}
+          emissiveIntensity={0.6}
+          toneMapped={false}
+        />
       </mesh>
-      <mesh position={[0, 0.29, 0.206]}>
-        <circleGeometry args={[0.035, 6]} />
-        <meshBasicMaterial color={cyan} transparent opacity={0.15} toneMapped={false} side={THREE.DoubleSide} />
-      </mesh>
-
-      {/* === Scanning line === */}
-      <ScanLine />
-
-      {/* === Edge trim glow lines (outline effect) === */}
-      <EdgeTrimLine
-        points={[[-0.18, -0.36, 0.17], [-0.16, 0.0, 0.2], [-0.14, 0.26, 0.19], [-0.1, 0.37, 0.15]]}
-        intensity={0.2}
-      />
-      <EdgeTrimLine
-        points={[[0.18, -0.36, 0.17], [0.16, 0.0, 0.2], [0.14, 0.26, 0.19], [0.1, 0.37, 0.15]]}
-        intensity={0.2}
-      />
-
-      {/* === Waistband — tactical cummerbund === */}
-      <mesh position={[0, -0.36, 0]}>
-        <boxGeometry args={[0.38, 0.065, 0.34]} />
-        <meshPhysicalMaterial color="#060c18" metalness={0.45} roughness={0.4} clearcoat={0.6} clearcoatRoughness={0.15} />
-      </mesh>
-      {/* Waistband glow trim */}
-      <mesh position={[0, -0.33, 0]}>
-        <boxGeometry args={[0.385, 0.003, 0.345]} />
-        <meshBasicMaterial color={cyan} transparent opacity={0.15} toneMapped={false} />
-      </mesh>
-
-      {/* === Metal QD buckles === */}
-      {[-0.2, 0.2].map((x, i) => (
-        <group key={`qd-${i}`} position={[x, -0.08, 0.18]}>
-          <mesh>
-            <boxGeometry args={[0.03, 0.045, 0.016]} />
-            <meshPhysicalMaterial color="#8899bb" metalness={0.95} roughness={0.03} clearcoat={1} />
-          </mesh>
-          <mesh position={[0, 0, 0.009]}>
-            <boxGeometry args={[0.016, 0.025, 0.003]} />
-            <meshPhysicalMaterial color="#667799" metalness={0.9} roughness={0.08} clearcoat={1} />
-          </mesh>
-        </group>
-      ))}
-
-      {/* === D-rings on shoulders === */}
-      {[[-0.2, 0.47, 0.06], [0.2, 0.47, 0.06]].map(([x, y, z], i) => (
-        <mesh key={`dr-${i}`} position={[x, y, z]}>
-          <torusGeometry args={[0.012, 0.003, 6, 12]} />
-          <meshPhysicalMaterial color="#8899bb" metalness={0.95} roughness={0.03} clearcoat={1} />
-        </mesh>
-      ))}
-
-      {/* === Side adjustment straps with glow === */}
-      {([-1, 1] as const).map((xSign) => (
-        <group key={`adj-${xSign}`}>
-          <mesh position={[xSign * 0.24, -0.08, 0]}>
-            <boxGeometry args={[0.02, 0.22, 0.008]} />
-            <meshPhysicalMaterial color="#121e32" metalness={0.15} roughness={0.8} clearcoat={0.2} />
-          </mesh>
-          <mesh position={[xSign * 0.24, 0.02, 0]}>
-            <boxGeometry args={[0.028, 0.012, 0.015]} />
-            <meshPhysicalMaterial color="#8899bb" metalness={0.9} roughness={0.08} clearcoat={1} />
-          </mesh>
-          {/* Side glow accent */}
-          <mesh position={[xSign * 0.245, -0.08, 0]}>
-            <boxGeometry args={[0.001, 0.2, 0.006]} />
-            <meshBasicMaterial color={cyan} transparent opacity={0.12} toneMapped={false} />
-          </mesh>
-        </group>
-      ))}
-
-      {/* === Back spine channel === */}
-      <mesh position={[0, 0.05, -0.205]}>
-        <boxGeometry args={[0.018, 0.5, 0.003]} />
-        <meshPhysicalMaterial color="#0a1018" roughness={0.85} metalness={0.1} />
-      </mesh>
-
-      {/* === Velcro name tape areas === */}
-      {([[0, 0.29, 0.21], [-0.15, 0.46, 0.08], [0.15, 0.46, 0.08]] as [number, number, number][]).map((pos, i) => (
-        <mesh key={`vel-${i}`} position={pos}>
-          <boxGeometry args={[i === 0 ? 0.12 : 0.05, i === 0 ? 0.035 : 0.03, 0.004]} />
-          <meshPhysicalMaterial color="#1e2e48" roughness={0.98} metalness={0.02} />
-        </mesh>
-      ))}
-
-      {/* === Front panel piping/accent lines === */}
-      <mesh position={[0, 0.0, 0.21]}>
-        <boxGeometry args={[0.32, 0.003, 0.001]} />
-        <meshBasicMaterial color={cyan} transparent opacity={0.12} toneMapped={false} />
+      {/* Halo ring — pulses on hover */}
+      <mesh ref={haloRef} position={[0, 0.018, 0]} rotation={[Math.PI / 2, 0, 0]}>
+        <ringGeometry args={[0.024, 0.028, 24]} />
+        <meshBasicMaterial color={`#${color.getHexString()}`} transparent opacity={0.45} side={THREE.DoubleSide} toneMapped={false} />
       </mesh>
     </group>
   );
 }
 
-/* ═══════════════════════════════════════════════════
-   SCENE — dramatic lighting
-   ═══════════════════════════════════════════════════ */
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Strap — TubeGeometry along a CatmullRomCurve3
+// ═══════════════════════════════════════════════════════════════════════════
+
+function Strap({
+  points,
+  radius = 0.014,
+  matKey = "strap" as keyof typeof MAT,
+}: {
+  points: [number, number, number][];
+  radius?: number;
+  matKey?: keyof typeof MAT;
+}) {
+  const geom = useMemo(() => {
+    const curve = new THREE.CatmullRomCurve3(points.map(([x, y, z]) => new THREE.Vector3(x, y, z)));
+    return new THREE.TubeGeometry(curve, Math.max(40, points.length * 12), radius, 12, false);
+  }, [points, radius]);
+  const mat = MAT[matKey];
+  return (
+    <mesh geometry={geom} castShadow>
+      <meshPhysicalMaterial {...mat} />
+    </mesh>
+  );
+}
+
+
+// ═══════════════════════════════════════════════════════════════════════════
+// MOLLE webbing — repeated short tubes across a panel
+// ═══════════════════════════════════════════════════════════════════════════
+
+function MolleWebbing({
+  position,
+  rows = 3,
+  cols = 4,
+  rowGap = 0.06,
+  colGap = 0.05,
+}: {
+  position: [number, number, number];
+  rows?: number;
+  cols?: number;
+  rowGap?: number;
+  colGap?: number;
+}) {
+  return (
+    <group position={position}>
+      {Array.from({ length: rows }).map((_, r) =>
+        Array.from({ length: cols }).map((_, c) => {
+          const x = (c - (cols - 1) / 2) * colGap;
+          const y = (r - (rows - 1) / 2) * rowGap;
+          return (
+            <mesh key={`${r}-${c}`} position={[x, y, 0]} rotation={[0, 0, 0]}>
+              <boxGeometry args={[0.04, 0.012, 0.005]} />
+              <meshStandardMaterial {...MAT.strap} />
+            </mesh>
+          );
+        })
+      )}
+    </group>
+  );
+}
+
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Quick-release buckle — center chest
+// ═══════════════════════════════════════════════════════════════════════════
+
+function QuickReleaseBuckle({ position }: { position: [number, number, number] }) {
+  const ringGeom = useMemo(() => new THREE.LatheGeometry(
+    [
+      new THREE.Vector2(0.025, -0.005),
+      new THREE.Vector2(0.03, -0.005),
+      new THREE.Vector2(0.03, 0.005),
+      new THREE.Vector2(0.025, 0.005),
+    ],
+    24,
+  ), []);
+  return (
+    <group position={position}>
+      <mesh geometry={ringGeom}>
+        <meshStandardMaterial {...MAT.metal} />
+      </mesh>
+      <mesh>
+        <torusGeometry args={[0.022, 0.0035, 12, 24]} />
+        <meshStandardMaterial {...MAT.metal} />
+      </mesh>
+      {/* Center release button */}
+      <mesh position={[0, 0, 0.006]}>
+        <cylinderGeometry args={[0.012, 0.012, 0.004, 24]} />
+        <meshStandardMaterial color="#a855f7" emissive="#a855f7" emissiveIntensity={0.3} toneMapped={false} />
+      </mesh>
+    </group>
+  );
+}
+
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Status LED — small emissive dot with halo
+// ═══════════════════════════════════════════════════════════════════════════
+
+function StatusLED({ position, color = "#06b6d4", phase = 0 }: { position: [number, number, number]; color?: string; phase?: number }) {
+  const ref = useRef<THREE.MeshStandardMaterial>(null);
+  useFrame(({ clock }) => {
+    if (ref.current) {
+      ref.current.emissiveIntensity = 0.5 + Math.sin(clock.elapsedTime * 2.5 + phase) * 0.4;
+    }
+  });
+  return (
+    <mesh position={position}>
+      <sphereGeometry args={[0.005, 12, 12]} />
+      <meshStandardMaterial ref={ref} color={color} emissive={color} emissiveIntensity={0.7} toneMapped={false} />
+    </mesh>
+  );
+}
+
+
+// ═══════════════════════════════════════════════════════════════════════════
+// THE VEST — composed scene
+// ═══════════════════════════════════════════════════════════════════════════
+
+const SENSORS: SensorSpec[] = [
+  { pos: [-0.18, 0.18, 0.21], label: "PPG · Left pectoral", temp: 36.7 },
+  { pos: [0.18, 0.18, 0.21], label: "PPG · Right pectoral", temp: 36.8 },
+  { pos: [0.0, 0.32, 0.20], label: "PPG · Cervical", temp: 37.0 },
+  { pos: [-0.10, 0.05, 0.23], label: "ECG · Lead I", temp: 36.6 },
+  { pos: [0.10, 0.05, 0.23], label: "ECG · Lead II", temp: 36.6 },
+  { pos: [0.0, -0.05, 0.23], label: "ECG · Lead III", temp: 36.6 },
+  { pos: [-0.16, -0.18, 0.21], label: "DS18B20 · Skin temp L", temp: 36.4 },
+  { pos: [0.16, -0.18, 0.21], label: "DS18B20 · Skin temp R", temp: 36.5 },
+  { pos: [0.0, -0.22, 0.22], label: "INMP441 · I²S mic", temp: 36.3 },
+];
 
 export function VestScene({ onSensorHover }: { onSensorHover: (label: string | null, temp: number) => void }) {
+  const handleHover = useCallback((s: SensorSpec | null) => {
+    if (s) onSensorHover(s.label, s.temp);
+    else onSensorHover(null, 0);
+  }, [onSensorHover]);
+
+  // Geometries cached once
+  const frontTorso = useMemo(() => makeTorsoPanel({ width: 0.55, height: 0.78, curveDepth: 0.16, cutNeck: true }), []);
+  const backTorso = useMemo(() => makeTorsoPanel({ width: 0.55, height: 0.78, curveDepth: 0.16, cutNeck: true }), []);
+  const sidePanelGeom = useMemo(() => makeSidePanel(), []);
+
+  // Shoulder yoke curve — over the shoulder from front to back
+  const leftShoulderPoints: [number, number, number][] = [
+    [-0.27, 0.36, 0.16],
+    [-0.32, 0.42, 0.05],
+    [-0.30, 0.42, -0.05],
+    [-0.27, 0.36, -0.16],
+  ];
+  const rightShoulderPoints: [number, number, number][] = leftShoulderPoints.map(([x, y, z]) => [-x, y, z] as [number, number, number]);
+
+  // Side straps connecting front + back at the waist
+  const leftSideStrap: [number, number, number][] = [
+    [-0.27, 0, 0.16],
+    [-0.36, 0, 0.0],
+    [-0.27, 0, -0.16],
+  ];
+  const rightSideStrap: [number, number, number][] = leftSideStrap.map(([x, y, z]) => [-x, y, z] as [number, number, number]);
+
+  // Cable runs — from sensors to control module (located at center chest)
+  const cableTo: [number, number, number] = [0, 0.05, 0.21];
+  const cables: { from: [number, number, number]; to: [number, number, number] }[] = [
+    { from: [-0.18, 0.18, 0.21], to: cableTo },
+    { from: [0.18, 0.18, 0.21], to: cableTo },
+    { from: [0.0, 0.32, 0.20], to: cableTo },
+    { from: [-0.16, -0.18, 0.21], to: cableTo },
+    { from: [0.16, -0.18, 0.21], to: cableTo },
+  ];
+
   return (
     <>
-      {/* Key light — warm white */}
-      <directionalLight position={[3, 5, 4]} intensity={0.5} color="#f8f0e8" />
-      {/* Fill — cool cyan */}
-      <directionalLight position={[-3, 3, -2]} intensity={0.25} color="#00d4ff" />
-      {/* Ambient — very dim */}
-      <ambientLight intensity={0.2} />
-      {/* Rim lights — dramatic edge glow */}
-      <pointLight position={[0, 0, 2.5]} intensity={0.5} color="#00d4ff" distance={5} decay={2} />
-      <pointLight position={[0, -1, -2]} intensity={0.2} color="#4400ff" distance={4} decay={2} />
-      <pointLight position={[1.5, 1.5, 0]} intensity={0.15} color="#00ff88" distance={3.5} decay={2} />
-      {/* Under-light — subtle purple */}
-      <pointLight position={[0, -1.5, 0.5]} intensity={0.08} color="#6622cc" distance={3} decay={2} />
+      {/* Lighting — three-point + rims */}
+      <ambientLight intensity={0.35} />
+      <directionalLight position={[3, 5, 4]} intensity={0.6} color="#fdf6e8" />
+      <directionalLight position={[-3, 2, -2]} intensity={0.25} color="#7dd3fc" />
+      <pointLight position={[0, 0.2, 1.5]} intensity={0.45} color="#a855f7" distance={3} decay={2} />
+      <pointLight position={[0.8, -0.2, 0.6]} intensity={0.3} color="#d946ef" distance={2.5} decay={2} />
+      <pointLight position={[-0.8, 0.4, -0.5]} intensity={0.2} color="#06b6d4" distance={2.5} decay={2} />
 
-      <Float speed={0.8} rotationIntensity={0.01} floatIntensity={0.03}>
-        <FuturisticVest />
-        {SENSOR_ZONES.map((zone) => (
-          <SensorNode key={zone.id} pos={zone.pos} temp={zone.temp} label={zone.label} onHover={onSensorHover} />
-        ))}
+      <Float speed={1} rotationIntensity={0.05} floatIntensity={0.15} floatingRange={[-0.005, 0.005]}>
+        <group rotation={[0, 0, 0]} position={[0, 0, 0]}>
+
+          {/* ── Front torso panel ── */}
+          <mesh geometry={frontTorso} castShadow receiveShadow>
+            <meshPhysicalMaterial {...MAT.carbon} side={THREE.DoubleSide} />
+          </mesh>
+
+          {/* Center spine accent stripe (front) */}
+          <mesh position={[0, -0.05, 0.205]}>
+            <boxGeometry args={[0.018, 0.55, 0.002]} />
+            <meshPhysicalMaterial {...MAT.carbonAccent} />
+          </mesh>
+
+          {/* ── Back torso panel ── */}
+          <group rotation={[0, Math.PI, 0]}>
+            <mesh geometry={backTorso} castShadow receiveShadow>
+              <meshPhysicalMaterial {...MAT.carbon} side={THREE.DoubleSide} />
+            </mesh>
+          </group>
+
+          {/* ── Side cummerbund panels ── */}
+          {[
+            { x: -0.34, rot: -0.18 },
+            { x: 0.34, rot: 0.18 },
+          ].map(({ x, rot }, i) => (
+            <mesh
+              key={i}
+              geometry={sidePanelGeom}
+              position={[x, 0, -0.06]}
+              rotation={[0, rot, 0]}
+              castShadow
+            >
+              <meshPhysicalMaterial {...MAT.carbon} />
+            </mesh>
+          ))}
+
+          {/* ── Shoulder yokes ── */}
+          <Strap points={leftShoulderPoints} radius={0.025} matKey="carbonAccent" />
+          <Strap points={rightShoulderPoints} radius={0.025} matKey="carbonAccent" />
+
+          {/* ── Side straps ── */}
+          <Strap points={leftSideStrap} radius={0.018} matKey="strap" />
+          <Strap points={rightSideStrap} radius={0.018} matKey="strap" />
+
+          {/* ── Control module (center chest) ── */}
+          <ControlModule position={[0, 0.05, 0.215]} />
+
+          {/* ── Quick-release buckle (below control module) ── */}
+          <QuickReleaseBuckle position={[0, -0.10, 0.215]} />
+
+          {/* ── MOLLE webbing on the lower abdomen ── */}
+          <MolleWebbing position={[0, -0.30, 0.21]} rows={2} cols={5} rowGap={0.06} colGap={0.06} />
+          {/* MOLLE on the back */}
+          <group rotation={[0, Math.PI, 0]}>
+            <MolleWebbing position={[0, -0.10, 0.21]} rows={3} cols={5} />
+          </group>
+
+          {/* ── Cable runs from sensors to control module ── */}
+          {cables.map((c, i) => {
+            const mid: [number, number, number] = [
+              (c.from[0] + c.to[0]) / 2,
+              (c.from[1] + c.to[1]) / 2,
+              0.218,
+            ];
+            return (
+              <Strap
+                key={i}
+                points={[c.from, mid, c.to]}
+                radius={0.0035}
+                matKey="metalDark"
+              />
+            );
+          })}
+
+          {/* ── Sensor pads ── */}
+          {SENSORS.map((s, i) => (
+            <SensorPad key={i} spec={s} onHover={handleHover} />
+          ))}
+
+          {/* ── Status LEDs scattered along the upper chest ── */}
+          <StatusLED position={[-0.22, 0.0, 0.218]} color="#06b6d4" phase={0.0} />
+          <StatusLED position={[0.22, 0.0, 0.218]} color="#06b6d4" phase={0.6} />
+          <StatusLED position={[-0.22, -0.04, 0.218]} color="#10b981" phase={1.2} />
+          <StatusLED position={[0.22, -0.04, 0.218]} color="#10b981" phase={1.8} />
+
+          {/* ── Shoulder accent strips (LED line along the yoke) ── */}
+          <mesh position={[-0.30, 0.40, 0.0]} rotation={[Math.PI / 2, 0, 0]}>
+            <torusGeometry args={[0.06, 0.0015, 8, 24, Math.PI]} />
+            <meshStandardMaterial color="#a855f7" emissive="#a855f7" emissiveIntensity={1.2} toneMapped={false} />
+          </mesh>
+          <mesh position={[0.30, 0.40, 0.0]} rotation={[Math.PI / 2, 0, 0]}>
+            <torusGeometry args={[0.06, 0.0015, 8, 24, Math.PI]} />
+            <meshStandardMaterial color="#a855f7" emissive="#a855f7" emissiveIntensity={1.2} toneMapped={false} />
+          </mesh>
+
+        </group>
       </Float>
-
-      <FloatingParticles count={60} />
-
-      <OrbitControls
-        enablePan={false}
-        enableZoom={true}
-        minDistance={1.2}
-        maxDistance={3.5}
-        minPolarAngle={Math.PI / 6}
-        maxPolarAngle={Math.PI / 1.35}
-        autoRotate
-        autoRotateSpeed={0.9}
-      />
     </>
   );
 }
 
-/* ═══ Loading ═══ */
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Loading fallback
+// ═══════════════════════════════════════════════════════════════════════════
 
 function LoadingFallback() {
   return (
-    <div className="absolute inset-0 flex items-center justify-center z-10">
-      <div className="flex flex-col items-center gap-3">
-        <div className="w-12 h-12 border-2 border-primary/15 border-t-primary rounded-full animate-spin" />
-        <span className="text-[10px] text-muted-foreground font-display tracking-[0.2em] uppercase">
-          Initializing 3D Telemetry...
-        </span>
+    <div className="absolute inset-0 flex items-center justify-center bg-black/40 backdrop-blur-sm">
+      <div className="flex flex-col items-center gap-2 text-violet-300">
+        <div className="w-8 h-8 rounded-full border-2 border-violet-300 border-t-transparent animate-spin" />
+        <p className="text-xs font-mono uppercase tracking-wider">Loading vest…</p>
       </div>
     </div>
   );
 }
 
-/* ═══════════════════════════════════════════════════
-   EXPORTED COMPONENT
-   ═══════════════════════════════════════════════════ */
+
+// ═══════════════════════════════════════════════════════════════════════════
+// VestModel3D — self-contained: own Canvas + DOM overlays
+// ═══════════════════════════════════════════════════════════════════════════
 
 export function VestModel3D() {
-  const [hoveredSensor, setHoveredSensor] = useState<{ label: string; temp: number } | null>(null);
+  const [hovered, setHovered] = useState<{ label: string; temp: number } | null>(null);
 
-  const handleSensorHover = useCallback((label: string | null, temp: number) => {
-    setHoveredSensor(label ? { label, temp } : null);
+  const handleHover = useCallback((label: string | null, temp: number) => {
+    setHovered(label ? { label, temp } : null);
   }, []);
 
   return (
     <div className="relative w-full h-full min-h-[420px]">
-      {/* Sensor tooltip */}
-      {hoveredSensor && (
-        <div className="absolute top-4 left-4 z-10 bg-secondary/95 backdrop-blur-md border border-primary/20 rounded-lg px-4 py-3 glow-cyan">
-          <p className="text-[10px] font-semibold text-primary font-display uppercase tracking-[0.15em]">
-            {hoveredSensor.label}
+
+      {/* Hover tooltip */}
+      {hovered && (
+        <div className="absolute top-4 left-4 z-10 bg-black/80 backdrop-blur-md border border-violet-500/40 rounded-lg px-4 py-3 shadow-[0_0_24px_rgba(168,85,247,0.4)]">
+          <p className="text-[10px] font-semibold text-violet-300 uppercase tracking-[0.15em]">
+            {hovered.label}
           </p>
-          <p className="text-2xl font-bold text-foreground font-display mt-0.5">
-            {hoveredSensor.temp.toFixed(1)}°C
+          <p className="text-2xl font-bold text-white mt-0.5 font-mono">
+            {hovered.temp.toFixed(1)}°C
           </p>
           <div className="flex items-center gap-2 mt-1.5">
-            <div className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: `#${tempToColor(hoveredSensor.temp).getHexString()}` }} />
-            <span className="text-[10px] text-muted-foreground uppercase tracking-wider font-medium">
-              {hoveredSensor.temp > 37.3 ? "Elevated" : hoveredSensor.temp < 36.0 ? "Cool Zone" : "Normal"}
+            <div className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: `#${tempToColor(hovered.temp).getHexString()}` }} />
+            <span className="text-[10px] text-white/60 uppercase tracking-wider font-medium">
+              {hovered.temp > 37.3 ? "Elevated" : hovered.temp < 36.0 ? "Cool zone" : "Normal"}
             </span>
           </div>
         </div>
       )}
 
       {/* Thermal scale */}
-      <div className="absolute bottom-4 left-4 z-10 bg-secondary/80 backdrop-blur-md border border-border/50 rounded-lg px-3 py-2">
-        <p className="text-[8px] text-primary/60 uppercase tracking-[0.2em] mb-1 font-display font-semibold">
-          Thermal Gradient
+      <div className="absolute bottom-4 left-4 z-10 bg-black/70 backdrop-blur-md border border-white/10 rounded-lg px-3 py-2">
+        <p className="text-[8px] text-violet-300/70 uppercase tracking-[0.2em] mb-1 font-semibold">
+          Thermal gradient
         </p>
         <div className="flex items-center gap-1.5">
-          <span className="text-[9px] text-muted-foreground font-mono">35.0</span>
+          <span className="text-[9px] text-white/50 font-mono">35.0</span>
           <div className="w-20 h-2 rounded-sm" style={{ background: "linear-gradient(90deg, #0066ff, #00ffaa, #ffbb00, #ff2200)" }} />
-          <span className="text-[9px] text-muted-foreground font-mono">38.5</span>
+          <span className="text-[9px] text-white/50 font-mono">38.5</span>
         </div>
       </div>
 
       {/* Controls hint */}
-      <div className="absolute top-4 right-4 z-10 bg-secondary/50 backdrop-blur-md border border-border/30 rounded-lg px-3 py-1.5">
-        <p className="text-[8px] text-muted-foreground/70 uppercase tracking-[0.2em] font-display">
-          Drag to rotate • Scroll to zoom
+      <div className="absolute top-4 right-4 z-10 bg-black/50 backdrop-blur-md border border-white/10 rounded-lg px-3 py-1.5">
+        <p className="text-[8px] text-white/60 uppercase tracking-[0.2em]">
+          Drag to rotate · scroll to zoom
         </p>
       </div>
 
-      {/* Canvas */}
       <Suspense fallback={<LoadingFallback />}>
         <Canvas
-          camera={{ position: [0, 0.12, 1.8], fov: 38 }}
+          camera={{ position: [0, 0.05, 1.6], fov: 38 }}
           style={{ background: "transparent" }}
           gl={{ antialias: true, alpha: true, powerPreference: "high-performance" }}
           dpr={[1, 2]}
+          shadows
         >
-          <VestScene onSensorHover={handleSensorHover} />
+          <VestScene onSensorHover={handleHover} />
+          <OrbitControls
+            enablePan={false}
+            minDistance={1.0}
+            maxDistance={3.5}
+            minPolarAngle={Math.PI / 4}
+            maxPolarAngle={(Math.PI * 3) / 4}
+            target={[0, 0.05, 0]}
+          />
+          <Environment preset="city" />
         </Canvas>
       </Suspense>
     </div>
