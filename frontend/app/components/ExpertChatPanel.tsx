@@ -15,15 +15,17 @@ import {
   Volume2,
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
+import { askAgent } from "../lib/api";
+import { useActivePatient } from "../hooks/useActivePatient";
 
 const EXPERTS = [
-  { id: "general", label: "General Physician", color: "text-primary" },
-  { id: "cardio", label: "Cardiologist", color: "text-destructive" },
-  { id: "pulmo", label: "Pulmonologist", color: "text-vital-green" },
-  { id: "gyno", label: "Gynecologist", color: "text-pink-500" },
-  { id: "derma", label: "Dermatologist", color: "text-orange-500" },
-  { id: "neuro", label: "Neurologist", color: "text-violet-500" },
-  { id: "occul", label: "Occulometric Expert", color: "text-cyan-glow" },
+  { id: "general physician", label: "General Physician", color: "text-primary" },
+  { id: "cardiology", label: "Cardiologist", color: "text-destructive" },
+  { id: "pulmonary", label: "Pulmonologist", color: "text-vital-green" },
+  { id: "obstetrics", label: "OB / Gynecologist", color: "text-pink-500" },
+  { id: "dermatology", label: "Dermatologist", color: "text-orange-500" },
+  { id: "neurology", label: "Neurologist", color: "text-violet-500" },
+  { id: "ocular", label: "Ocular Expert", color: "text-cyan-glow" },
 ];
 
 interface Message {
@@ -32,6 +34,7 @@ interface Message {
 }
 
 export function ExpertChatPanel() {
+  const { patientId } = useActivePatient();
   const [open, setOpen] = useState(false);
   const [expert, setExpert] = useState(EXPERTS[0]);
   const [dropdownOpen, setDropdownOpen] = useState(false);
@@ -106,31 +109,27 @@ export function ExpertChatPanel() {
     ]);
   };
 
-  const sendMessage = () => {
+  const sendMessage = async () => {
     if (!input.trim()) return;
     const userMsg = input.trim();
     setInput("");
     setMessages((prev) => [...prev, { role: "user", content: userMsg }]);
     setIsTyping(true);
 
-    setTimeout(() => {
-      const responses: Record<string, string> = {
-        general: `Based on the current telemetry from your MedVerse vest, all systems are nominal. Your heart rate of **72 BPM** is within the healthy resting range, SpO₂ is at **98%**, and core temperature is **36.8°C**.`,
-        cardio: `Analyzing your ECG traces from Lead I and Lead II vectors. Sinus rhythm is confirmed with no ST-segment elevation or depression. QRS complex duration is within normal limits at **0.08s**.`,
-        pulmo: `I2S acoustic analysis shows clear lung fields bilaterally. No crackles, wheezing, or rhonchi detected. Your respiratory rate of **16 breaths/min** is within the normal eupneic range.`,
-        gyno: `Reviewing available biometric data. Core temperature tracking is stable. For comprehensive monitoring, I recommend enabling the Foetal Monitoring Module if applicable.`,
-        derma: `Based on temperature and environmental telemetry, skin conditions appear stable. The air quality sensor reads within safe parameters.`,
-        neuro: `Dual-IMU spatial data shows stable postural metrics. No tremor frequencies detected. Cognitive load indicators suggest a calm, rested state.`,
-        occul: `Occulometric baseline readings are within normal parameters. No indicators of elevated intraocular pressure detected.`,
-      };
-      const responseText = responses[expert.id] || responses.general;
+    try {
+      const r = await askAgent(expert.id, userMsg, patientId || undefined);
+      const responseText = r.reply || "(no response)";
+      setMessages((prev) => [...prev, { role: "assistant", content: responseText }]);
+      speakText(responseText);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
       setMessages((prev) => [
         ...prev,
-        { role: "assistant", content: responseText },
+        { role: "assistant", content: `_Agent unavailable — ${msg}._ Try again in a moment, or check the agent worker logs.` },
       ]);
+    } finally {
       setIsTyping(false);
-      speakText(responseText);
-    }, 1500);
+    }
   };
 
   return (

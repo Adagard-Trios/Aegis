@@ -22,7 +22,8 @@ load_dotenv()
 
 import numpy as np
 from scipy.signal import butter, filtfilt, find_peaks
-from fastapi import FastAPI, UploadFile, File, Depends
+import logging
+from fastapi import FastAPI, UploadFile, File, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -30,9 +31,18 @@ from pydantic import BaseModel
 from src.utils.db import (
     init_db,
     insert_telemetry,
+    insert_interpretation,
     get_latest_telemetry,
     get_latest_interpretations,
     get_history,
+    list_patients,
+    get_patient,
+    upsert_patient,
+    insert_alert,
+    list_alerts,
+    acknowledge_alert,
+    find_recent_alert,
+    list_audit,
     DEFAULT_PATIENT_ID,
 )
 from src.utils.imu_features import build_imu_derived_block
@@ -51,6 +61,8 @@ from src.utils.auth import (
     require_user,
     verify_dev_credentials,
 )
+from src.utils.audit import audit
+from src.alerts.rules import evaluate as evaluate_alerts
 
 # =============================================================
 # CONFIGURATION
@@ -754,15 +766,30 @@ def build_telemetry_snapshot() -> dict:
 # FASTAPI APP
 # =============================================================
 
+def _truthy(v: Optional[str]) -> bool:
+    return (v or "").strip().lower() in ("1", "true", "yes", "on")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Start BLE connection thread on server startup."""
+    """Start background threads on server startup. BLE is opt-out via
+    MEDVERSE_DISABLE_BLE for cloud deployments where no Bluetooth radio exists."""
     init_db()
-    ble_thread = threading.Thread(target=ble_thread_runner, daemon=True)
-    ble_thread.start()
-    
+
+    if not _truthy(os.environ.get("MEDVERSE_DISABLE_BLE")):
+        ble_thread = threading.Thread(target=ble_thread_runner, daemon=True)
+        ble_thread.start()
+    else:
+        global using_mock
+        using_mock = True
+        start_mock_data()
+
     sqlite_thread = threading.Thread(target=sqlite_writer_loop, daemon=True)
     sqlite_thread.start()
+
+    if not _truthy(os.environ.get("MEDVERSE_DISABLE_AGENT_LOOP")):
+        agent_thread = threading.Thread(target=agent_runner_loop, daemon=True)
+        agent_thread.start()
     yield
 
 app = FastAPI(title="MedVerse Telemetry API", version="1.0.0", lifespan=lifespan)
@@ -951,11 +978,59 @@ async def stream_telemetry(token: Optional[str] = None, patient_id: Optional[str
 
 
 def sqlite_writer_loop():
-    """Periodically persist the current telemetry snapshot under ACTIVE_PATIENT_ID."""
+    """Periodically persist the current telemetry snapshot AND evaluate alert rules."""
     while True:
         snapshot = build_telemetry_snapshot()
-        insert_telemetry(snapshot, patient_id=ACTIVE_PATIENT_ID)
+        try:
+            insert_telemetry(snapshot, patient_id=ACTIVE_PATIENT_ID)
+        except Exception as e:
+            logging.getLogger(__name__).error(f"telemetry write failed: {e}")
+        try:
+            evaluate_and_persist_alerts(snapshot, ACTIVE_PATIENT_ID)
+        except Exception as e:
+            logging.getLogger(__name__).error(f"alert evaluation failed: {e}")
         time.sleep(1.0)
+
+
+def agent_runner_loop():
+    """Background worker — runs all 7 specialty graphs against the latest snapshot
+    every 60 s and writes to the interpretations table."""
+    if _truthy(os.environ.get("MEDVERSE_DISABLE_AGENT_LOOP")):
+        return
+    interval = int(os.environ.get("MEDVERSE_AGENT_INTERVAL", "60"))
+    time.sleep(15.0)  # let other startup work settle
+    log = logging.getLogger(__name__)
+    while True:
+        snapshot = get_latest_telemetry(patient_id=ACTIVE_PATIENT_ID) or build_telemetry_snapshot()
+        # Skip when stream is essentially empty to avoid burning Groq credits.
+        hr = (snapshot.get("vitals") or {}).get("heart_rate") or 0
+        if hr < 5:
+            time.sleep(interval)
+            continue
+        try:
+            from src.graphs.graph_factory import build_expert_graph
+        except Exception as e:
+            log.warning(f"agent loop: graph factory unavailable ({e}); sleeping")
+            time.sleep(interval * 2)
+            continue
+        for spec in _AGENT_SPECIALTIES:
+            try:
+                g = build_expert_graph(spec).compile()
+                r = g.invoke({"telemetry": snapshot, "patient_id": ACTIVE_PATIENT_ID, "messages": []})
+                text, sev, score = "", "normal", 0.0
+                if isinstance(r, dict):
+                    text = str(r.get("interpretation") or r.get("response") or "")
+                    sev = r.get("severity", "normal")
+                    try:
+                        score = float(r.get("severity_score", 0) or 0)
+                    except Exception:
+                        score = 0.0
+                if text:
+                    insert_interpretation(specialty=spec, findings=text, severity=sev,
+                                          severity_score=score, patient_id=ACTIVE_PATIENT_ID)
+            except Exception as e:
+                log.error(f"agent_runner_loop({spec}) failed: {e}")
+        time.sleep(interval)
 
 
 def _resolve_patient_id(query_patient_id: Optional[str], user: Optional[dict]) -> str:
@@ -1226,6 +1301,393 @@ async def upload_lab_results(file: UploadFile = File(...)):
 
 
 
+@app.get("/health")
+async def health():
+    """Lightweight liveness probe for Render / load balancers."""
+    return {"status": "ok", "mock": using_mock, "ble_disabled": _truthy(os.environ.get("MEDVERSE_DISABLE_BLE"))}
+
+
+# =============================================================
+# PATIENTS (Phase 3)
+# =============================================================
+
+class PatientCreate(BaseModel):
+    name: str
+    mrn: Optional[str] = None
+    dob: Optional[str] = None
+    sex: Optional[str] = None
+    gestational_age_weeks: Optional[int] = None
+    conditions: Optional[list] = None
+    assigned_clinician_id: Optional[str] = None
+    care_plan_id: Optional[str] = None
+
+
+class PatientUpdate(BaseModel):
+    name: Optional[str] = None
+    mrn: Optional[str] = None
+    dob: Optional[str] = None
+    sex: Optional[str] = None
+    gestational_age_weeks: Optional[int] = None
+    conditions: Optional[list] = None
+    assigned_clinician_id: Optional[str] = None
+    care_plan_id: Optional[str] = None
+
+
+@app.get("/api/patients")
+async def api_list_patients(request: Request, user=Depends(require_user)):
+    audit(request, user, "list", "patients")
+    return list_patients()
+
+
+@app.get("/api/patients/{patient_id}")
+async def api_get_patient(patient_id: str, request: Request, user=Depends(require_user)):
+    p = get_patient(patient_id)
+    if not p:
+        from fastapi import HTTPException, status as _st
+        raise HTTPException(status_code=_st.HTTP_404_NOT_FOUND, detail="Patient not found")
+    audit(request, user, "read", "patient", patient_id)
+    return p
+
+
+@app.post("/api/patients")
+async def api_create_patient(req: PatientCreate, request: Request, user=Depends(require_user)):
+    p = upsert_patient(req.model_dump())
+    audit(request, user, "create", "patient", p.get("id"))
+    return p
+
+
+@app.patch("/api/patients/{patient_id}")
+async def api_update_patient(patient_id: str, req: PatientUpdate, request: Request, user=Depends(require_user)):
+    existing = get_patient(patient_id)
+    if not existing:
+        from fastapi import HTTPException, status as _st
+        raise HTTPException(status_code=_st.HTTP_404_NOT_FOUND, detail="Patient not found")
+    merged = {**existing, **{k: v for k, v in req.model_dump().items() if v is not None}}
+    merged["id"] = patient_id
+    p = upsert_patient(merged)
+    audit(request, user, "update", "patient", patient_id)
+    return p
+
+
+# =============================================================
+# ALERTS (Phase 4)
+# =============================================================
+
+@app.get("/api/alerts")
+async def api_list_alerts(
+    patient_id: Optional[str] = None,
+    unacknowledged: bool = False,
+    limit: int = 100,
+    request: Request = None,  # type: ignore
+    user=Depends(require_user),
+):
+    pid = _resolve_patient_id(patient_id, user) if patient_id is None else patient_id
+    audit(request, user, "list", "alerts", pid)
+    return list_alerts(patient_id=pid, unacknowledged=unacknowledged, limit=max(1, min(limit, 1000)))
+
+
+class AcknowledgeRequest(BaseModel):
+    note: Optional[str] = ""
+
+
+@app.post("/api/alerts/{alert_id}/acknowledge")
+async def api_ack_alert(alert_id: int, req: AcknowledgeRequest, request: Request, user=Depends(require_user)):
+    user_id = (user or {}).get("sub", "anonymous") if isinstance(user, dict) else "anonymous"
+    ok = acknowledge_alert(alert_id, user_id=user_id, note=req.note or "")
+    audit(request, user, "acknowledge", "alert", str(alert_id))
+    return {"status": "ok" if ok else "not_found"}
+
+
+@app.get("/api/alerts/stream")
+async def api_alerts_stream(token: Optional[str] = None, patient_id: Optional[str] = None):
+    """SSE feed of newly-created alerts. Polls the DB every 2s."""
+    if auth_enabled():
+        from fastapi import HTTPException, status as _st
+        if not token:
+            raise HTTPException(status_code=_st.HTTP_401_UNAUTHORIZED, detail="Missing ?token=")
+        try:
+            from src.utils.auth import _decode
+            _decode(token)
+        except Exception as e:
+            raise HTTPException(status_code=_st.HTTP_401_UNAUTHORIZED, detail=str(e))
+
+    async def gen():
+        last_id = 0
+        while True:
+            try:
+                rows = list_alerts(patient_id=patient_id, limit=20)
+                rows = [r for r in rows if r["id"] > last_id]
+                rows.sort(key=lambda r: r["id"])
+                for r in rows:
+                    last_id = max(last_id, r["id"])
+                    yield f"data: {json.dumps(r)}\n\n"
+            except Exception as e:
+                logging.getLogger(__name__).error(f"alerts stream error: {e}")
+            await asyncio.sleep(2.0)
+
+    return StreamingResponse(gen(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+# =============================================================
+# AGENT INVOCATION (Phase 5)
+# =============================================================
+
+class AgentAskRequest(BaseModel):
+    specialty: str
+    message: str
+    patient_id: Optional[str] = None
+
+
+_SPECIALTY_TO_GRAPH = {
+    "cardiology": "Cardiology Expert",
+    "pulmonary": "Pulmonary Expert",
+    "respiratory": "Pulmonary Expert",
+    "neurology": "Neurology Expert",
+    "dermatology": "Dermatology Expert",
+    "obstetrics": "Obstetrics Expert",
+    "gynecology": "Obstetrics Expert",
+    "ocular": "Ocular Expert",
+    "general physician": "General Physician",
+    "general_physician": "General Physician",
+}
+
+
+def _resolve_specialty(label: str) -> str:
+    return _SPECIALTY_TO_GRAPH.get((label or "").strip().lower(), label or "")
+
+
+@app.post("/api/agent/ask")
+async def api_agent_ask(req: AgentAskRequest, request: Request, user=Depends(require_user)):
+    """Synchronously invoke an expert graph and return its assessment."""
+    specialty = _resolve_specialty(req.specialty)
+    pid = _resolve_patient_id(req.patient_id, user)
+    audit(request, user, "ask", "agent", specialty)
+    try:
+        from src.graphs.graph_factory import build_expert_graph
+        graph = build_expert_graph(specialty).compile()
+        snapshot = get_latest_telemetry(patient_id=pid) or build_telemetry_snapshot()
+        state = {
+            "messages": [{"role": "user", "content": req.message}],
+            "patient_id": pid,
+            "telemetry": snapshot,
+        }
+        result = graph.invoke(state)
+        reply = ""
+        if isinstance(result, dict):
+            messages = result.get("messages") or []
+            if messages:
+                last = messages[-1]
+                reply = last.get("content") if isinstance(last, dict) else getattr(last, "content", "")
+            reply = reply or str(result.get("interpretation") or result.get("response") or "")
+        return {
+            "reply": reply or "(no response)",
+            "severity": (result or {}).get("severity", "normal"),
+            "severity_score": (result or {}).get("severity_score", 0),
+            "specialty": specialty,
+        }
+    except Exception as e:
+        logger = logging.getLogger(__name__)
+        logger.error(f"agent ask failed: {e}")
+        return {
+            "reply": f"Agent unavailable: {e}. Telemetry snapshot is still being collected — try again in a few seconds.",
+            "severity": "normal",
+            "severity_score": 0,
+            "specialty": specialty,
+        }
+
+
+_AGENT_SPECIALTIES = ["Cardiology", "Pulmonary", "Neurology", "Dermatology", "Obstetrics", "Ocular", "General Physician"]
+
+
+@app.post("/api/agent/run-now")
+async def api_agent_run_now(
+    patient_id: Optional[str] = None,
+    specialty: Optional[str] = None,
+    request: Request = None,  # type: ignore
+    user=Depends(require_user),
+):
+    """Trigger an immediate run for one or all specialties; persists to interpretations."""
+    pid = _resolve_patient_id(patient_id, user)
+    targets = [specialty] if specialty else _AGENT_SPECIALTIES
+    targets = [_resolve_specialty(s) for s in targets if s]
+    ran: list = []
+    snapshot = get_latest_telemetry(patient_id=pid) or build_telemetry_snapshot()
+    try:
+        from src.graphs.graph_factory import build_expert_graph
+    except Exception as e:
+        return {"status": "graph_unavailable", "error": str(e), "ran": []}
+    for spec in targets:
+        try:
+            g = build_expert_graph(spec).compile()
+            r = g.invoke({"telemetry": snapshot, "patient_id": pid, "messages": []})
+            text = ""
+            sev = "normal"
+            score = 0
+            if isinstance(r, dict):
+                text = str(r.get("interpretation") or r.get("response") or "")
+                sev = r.get("severity", "normal")
+                score = float(r.get("severity_score", 0) or 0)
+            insert_interpretation(specialty=spec, findings=text or "(no output)",
+                                  severity=sev, severity_score=score, patient_id=pid)
+            ran.append(spec)
+        except Exception as e:
+            logging.getLogger(__name__).error(f"run-now {spec} failed: {e}")
+    audit(request, user, "run_now", "agents", ",".join(ran))
+    return {"status": "ok", "ran": ran}
+
+
+# =============================================================
+# AUDIT (Phase 8)
+# =============================================================
+
+@app.get("/api/admin/audit")
+async def api_admin_audit(
+    limit: int = 200,
+    user_id: Optional[str] = None,
+    action: Optional[str] = None,
+    user=Depends(require_user),
+):
+    admin_username = os.environ.get("MEDVERSE_ADMIN_USERNAME", "medverse")
+    if auth_enabled() and isinstance(user, dict) and user.get("sub") != admin_username:
+        from fastapi import HTTPException, status as _st
+        raise HTTPException(status_code=_st.HTTP_403_FORBIDDEN, detail="Admin only")
+    return list_audit(limit=max(1, min(limit, 1000)), user_id=user_id, action=action)
+
+
+# =============================================================
+# EMERGENCY (Phase 12)
+# =============================================================
+
+class EmergencyRequest(BaseModel):
+    patient_id: Optional[str] = None
+    message: str
+    vitals: Optional[dict] = None
+    geolocation: Optional[dict] = None
+
+
+@app.post("/api/emergency")
+async def api_emergency(req: EmergencyRequest, request: Request, user=Depends(require_user)):
+    """Emergency action — fires a configured webhook + records a critical alert."""
+    pid = _resolve_patient_id(req.patient_id, user)
+    audit(request, user, "emergency", "patient", pid)
+    insert_alert(
+        patient_id=pid,
+        severity=10,
+        source="emergency_button",
+        message=req.message or "Manual emergency activation",
+        snapshot=req.vitals or get_latest_telemetry(patient_id=pid),
+    )
+    webhook = os.environ.get("MEDVERSE_EMERGENCY_WEBHOOK")
+    posted = None
+    if webhook:
+        try:
+            import urllib.request
+            payload = json.dumps({
+                "patient_id": pid,
+                "message": req.message,
+                "vitals": req.vitals or {},
+                "geolocation": req.geolocation or {},
+            }).encode()
+            r = urllib.request.Request(webhook, data=payload, headers={"Content-Type": "application/json"})
+            urllib.request.urlopen(r, timeout=4)
+            posted = webhook
+        except Exception as e:
+            logging.getLogger(__name__).error(f"emergency webhook failed: {e}")
+    return {"status": "ok", "webhook": posted}
+
+
+# =============================================================
+# CARE PLANS (Phase 6 — minimal seed)
+# =============================================================
+
+CARE_PLAN_SEED = [
+    {
+        "id": "preeclampsia_monitoring",
+        "name": "Preeclampsia monitoring",
+        "conditions": ["pregnancy", "hypertension"],
+        "thresholds": {
+            "spo2_min": 94,
+            "hr_max": 110,
+            "rr_max": 22,
+        },
+        "monitoring_frequency_s": 60,
+    },
+    {
+        "id": "post_cardiac_op",
+        "name": "Post-cardiac operative",
+        "conditions": ["cardiac_surgery"],
+        "thresholds": {
+            "hr_min": 50,
+            "hr_max": 110,
+            "spo2_min": 92,
+        },
+        "monitoring_frequency_s": 30,
+    },
+    {
+        "id": "chronic_copd",
+        "name": "Chronic COPD",
+        "conditions": ["copd"],
+        "thresholds": {
+            "spo2_min": 88,
+            "rr_max": 25,
+        },
+        "monitoring_frequency_s": 120,
+    },
+]
+
+
+@app.get("/api/care-plans")
+async def api_care_plans():
+    return CARE_PLAN_SEED
+
+
+class AssignCarePlanRequest(BaseModel):
+    care_plan_id: str
+
+
+@app.post("/api/patients/{patient_id}/care-plan")
+async def api_assign_care_plan(patient_id: str, req: AssignCarePlanRequest, request: Request, user=Depends(require_user)):
+    existing = get_patient(patient_id)
+    if not existing:
+        from fastapi import HTTPException, status as _st
+        raise HTTPException(status_code=_st.HTTP_404_NOT_FOUND, detail="Patient not found")
+    merged = {**existing, "care_plan_id": req.care_plan_id, "id": patient_id}
+    upsert_patient(merged)
+    audit(request, user, "assign_care_plan", "patient", patient_id)
+    return {"status": "ok", "care_plan_id": req.care_plan_id}
+
+
+def _care_plan_thresholds(plan_id: Optional[str]) -> dict:
+    if not plan_id:
+        return {}
+    for p in CARE_PLAN_SEED:
+        if p["id"] == plan_id:
+            return p.get("thresholds", {})
+    return {}
+
+
+# =============================================================
+# ALERT EVALUATION HOOK (called from sqlite_writer_loop)
+# =============================================================
+
+def evaluate_and_persist_alerts(snapshot: dict, patient_id: str) -> None:
+    pat = get_patient(patient_id)
+    plan_id = (pat or {}).get("care_plan_id") if pat else None
+    thresholds = _care_plan_thresholds(plan_id)
+    for a in evaluate_alerts(snapshot, thresholds=thresholds):
+        if find_recent_alert(patient_id, a["source"], within_seconds=120):
+            continue
+        insert_alert(
+            patient_id=patient_id,
+            severity=a["severity"],
+            source=a["source"],
+            message=a["message"],
+            snapshot=snapshot,
+        )
+
+
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    port = int(os.environ.get("PORT", "8000"))
+    uvicorn.run(app, host="0.0.0.0", port=port)

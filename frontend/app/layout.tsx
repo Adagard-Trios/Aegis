@@ -6,6 +6,8 @@ export const metadata: Metadata = {
   description:
     "Context-Aware Multi-Agent Clinical Wearable Platform for personalized medicine — real-time telemetry dashboard",
   authors: [{ name: "MedVerse" }],
+  manifest: "/manifest.json",
+  themeColor: "#4f46e5",
   openGraph: {
     title: "MedVerse Clinical Platform",
     description: "Context-Aware Multi-Agent Clinical Wearable Platform",

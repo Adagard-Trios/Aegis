@@ -1,0 +1,46 @@
+# Render blueprint for the MedVerse FastAPI backend.
+# https://render.com/docs/blueprint-spec
+#
+# After connecting this repo as a Blueprint, fill the four `sync: false`
+# env vars (GROQ_API_KEY, MEDVERSE_JWT_SECRET, MEDVERSE_DB_URL,
+# MEDVERSE_CORS_ORIGINS) in the Render dashboard.
+#
+# Cost: Starter plan ($7/mo). The Free plan sleeps after 15 min of idle
+# and is unsuitable for SSE telemetry.
+
+services:
+  - type: web
+    name: medverse-api
+    runtime: python
+    plan: starter
+    buildCommand: pip install -r requirements.txt
+    startCommand: python app.py
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.13.0
+      # Cloud has no Bluetooth radio — go straight to mock.
+      - key: MEDVERSE_DISABLE_BLE
+        value: "true"
+      # Auth off by default; flip to "true" + set MEDVERSE_JWT_SECRET when
+      # the frontend is auth-aware (Phase 8).
+      - key: MEDVERSE_AUTH_ENABLED
+        value: "false"
+      # Persist SQLite to a writable path. If MEDVERSE_DB_URL is set,
+      # this is ignored (Postgres/Timescale is used instead).
+      - key: MEDVERSE_SQLITE_PATH
+        value: /tmp/medverse.db
+      # ── User-supplied secrets (set in Render dashboard) ─────────────
+      - key: GROQ_API_KEY
+        sync: false
+      - key: MEDVERSE_JWT_SECRET
+        sync: false
+      # Timescale Cloud connection string. Use `postgresql+asyncpg://`
+      # prefix; src/utils/db.py normalizes it for psycopg2.
+      - key: MEDVERSE_DB_URL
+        sync: false
+      # Comma-separated allowlist. Add the Vercel URL after first FE deploy
+      # (e.g., https://medverse.vercel.app).
+      - key: MEDVERSE_CORS_ORIGINS
+        sync: false

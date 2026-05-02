@@ -8,6 +8,8 @@
 
 Boots the FastAPI backend on `:8000` and the Next.js frontend on `:3000` in parallel. Ctrl+C tears both down.
 
+For a hosted version see [Deploy](#deploy) below.
+
 ## Prerequisites
 
 | Tool       | Version        | Notes                                              |
@@ -65,6 +67,53 @@ Open `http://localhost:3000` and walk through:
 | `POST /api/simulation/medicate`     | Inject simulated drug (Bateman PK/PD model)            |
 | `POST /api/simulation/cyp2d6`       | Set metabolizer status (`Normal` / `Poor`)             |
 | `POST /api/simulation/mode`         | Temporal prediction mode (`Live`, `6h`, `12h`, …)      |
+| `GET  /health`                      | Liveness probe (used by Render)                        |
+
+## Deploy
+
+Backend on **Render**, frontend on **Vercel**, database on **Timescale Cloud free tier**. Total monthly cost ~$7 (Render Starter; Vercel + Timescale free tiers).
+
+### Pre-flight (one-time, ~15 min)
+
+1. Rotate the Groq API key at https://console.groq.com/keys. Save the new `gsk_...` value.
+2. Generate a JWT secret:
+   ```bash
+   python -c "import secrets; print(secrets.token_urlsafe(48))"
+   ```
+3. Sign up at https://console.cloud.timescale.com → **Create service** (free tier) → copy the connection string. Replace `postgresql://` with `postgresql+asyncpg://`.
+
+### Render (backend, ~30 min)
+
+1. https://render.com → **New + → Blueprint** → connect this GitHub repo. Render reads [render.yaml](render.yaml) automatically.
+2. Set the four `sync: false` env vars in the Render dashboard:
+   - `GROQ_API_KEY` = your rotated key
+   - `MEDVERSE_JWT_SECRET` = the generated secret
+   - `MEDVERSE_DB_URL` = your Timescale Cloud async URL
+   - `MEDVERSE_CORS_ORIGINS` = leave blank (you'll fill it after Vercel deploys)
+3. **Apply Changes** → first build ~5 min.
+4. Run the schema migration once: Render dashboard → **Shell** → `alembic upgrade head`.
+5. Copy the Render URL (e.g., `https://medverse-api.onrender.com`).
+
+### Vercel (frontend, ~10 min)
+
+1. https://vercel.com → **Add New → Project** → import this repo.
+2. **Root Directory** = `frontend` (Vercel offers to detect; confirm).
+3. Set environment variable: `NEXT_PUBLIC_API_URL` = your Render URL from step 5 above.
+4. Deploy. ~3 min. Push-to-`main` redeploys automatically thereafter.
+5. Copy the Vercel URL.
+
+### Close the loop
+
+Back in the Render dashboard, set `MEDVERSE_CORS_ORIGINS = https://<your-vercel-url>` → Render auto-redeploys.
+
+### Verify
+
+| Check | Expected |
+|---|---|
+| `https://<render-url>/health` | `{"status":"ok","mock":true,"ble_disabled":true}` |
+| `https://<render-url>/docs` | Swagger UI loads |
+| `https://<vercel-url>/` | Dashboard loads, STREAMING badge green within 5 s |
+| `https://<vercel-url>/digital-twin` | 3D model + PK/PD panel visible |
 
 ## Security defaults
 

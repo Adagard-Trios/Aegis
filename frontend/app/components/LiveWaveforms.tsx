@@ -185,49 +185,63 @@ function foetalGenerator(t: number): number {
   return baseline + variability;
 }
 
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+import { useVestStream } from "../hooks/useVestStream";
+
 export function LiveWaveforms() {
+  const { data } = useVestStream();
+  const v = data?.vitals;
+  const hasFullWaveform = !!data?.waveform;
+
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-      <WaveformCard
-        title="ECG Lead II"
-        icon={Activity}
-        color="hsl(160, 84%, 39%)"
-        generator={ecgGenerator}
-        yRange={[-0.3, 1.0]}
-        unit="mV"
-        value="0.84"
-        delay={0}
-      />
-      <WaveformCard
-        title="PPG Waveform"
-        icon={Heart}
-        color="hsl(0, 84%, 60%)"
-        generator={ppgGenerator}
-        yRange={[-0.1, 1.2]}
-        unit="SpO₂ 98%"
-        value="72"
-        delay={0.08}
-      />
-      <WaveformCard
-        title="Pneumogram"
-        icon={Wind}
-        color="hsl(191, 100%, 50%)"
-        generator={pneumogramGenerator}
-        yRange={[-0.1, 1.1]}
-        unit="br/min"
-        value="16"
-        delay={0.16}
-      />
-      <WaveformCard
-        title="Foetal Monitor"
-        icon={Baby}
-        color="hsl(330, 80%, 60%)"
-        generator={foetalGenerator}
-        yRange={[115, 165]}
-        unit="FHR"
-        value="140"
-        delay={0.24}
-      />
+    <div>
+      {!hasFullWaveform && (
+        <p className="text-[10px] text-muted-foreground italic mb-2">
+          Showing synthesised previews. Set <code className="bg-muted px-1 rounded">MEDVERSE_INCLUDE_WAVEFORM=true</code> on the backend to receive raw 800-sample buffers.
+        </p>
+      )}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <WaveformCard
+          title="ECG Lead II"
+          icon={Activity}
+          color="hsl(160, 84%, 39%)"
+          generator={ecgGenerator}
+          yRange={[-0.3, 1.0]}
+          unit="bpm"
+          value={data?.ecg?.ecg_hr?.toFixed(0) ?? "--"}
+          delay={0}
+        />
+        <WaveformCard
+          title="PPG Waveform"
+          icon={Heart}
+          color="hsl(0, 84%, 60%)"
+          generator={ppgGenerator}
+          yRange={[-0.1, 1.2]}
+          unit={`SpO₂ ${v?.spo2?.toFixed(0) ?? "--"}%`}
+          value={v?.heart_rate?.toFixed(0) ?? "--"}
+          delay={0.08}
+        />
+        <WaveformCard
+          title="Pneumogram"
+          icon={Wind}
+          color="hsl(191, 100%, 50%)"
+          generator={pneumogramGenerator}
+          yRange={[-0.1, 1.1]}
+          unit="br/min"
+          value={v?.breathing_rate?.toFixed(0) ?? "--"}
+          delay={0.16}
+        />
+        <WaveformCard
+          title="Foetal Monitor"
+          icon={Baby}
+          color="hsl(330, 80%, 60%)"
+          generator={foetalGenerator}
+          yRange={[115, 165]}
+          unit="FHR"
+          value={String((data?.fetal as { dawes_redman?: { fhr_baseline?: number } } | undefined)?.dawes_redman?.fhr_baseline ?? "140")}
+          delay={0.24}
+        />
+      </div>
     </div>
   );
 }

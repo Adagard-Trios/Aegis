@@ -1,158 +1,75 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import DashboardLayout from "../components/DashboardLayout";
 import { LiveECGMonitor } from "../components/LiveECGMonitor";
+import { ExpertCard } from "../components/ExpertCard";
+import { StatTile } from "../components/StatTile";
 import { motion } from "framer-motion";
-import { Heart, Waves, AlertCircle } from "lucide-react";
+import { Heart, Activity, Waves, Gauge, Zap, Wind } from "lucide-react";
+import { useVestStream } from "../hooks/useVestStream";
+import { useActivePatient } from "../hooks/useActivePatient";
+import { fetchInterpretations, type InterpretationsMap } from "../lib/api";
 
 export default function CardiologyPage() {
+  const { data, connected } = useVestStream();
+  const { patientId } = useActivePatient();
+  const [interp, setInterp] = useState<InterpretationsMap>({});
+  const [loadingInterp, setLoadingInterp] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const r = await fetchInterpretations(patientId || undefined);
+        if (!cancelled) setInterp(r);
+      } catch {
+        /* offline-tolerant */
+      } finally {
+        if (!cancelled) setLoadingInterp(false);
+      }
+    };
+    load();
+    const id = setInterval(load, 30_000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, [patientId]);
+
+  const v = data?.vitals;
+  const e = data?.ecg;
+  const activity = data?.imu_derived?.activity_state;
+
+  const cardiologyInterp = interp.Cardiology || interp.cardiology;
+
   return (
     <DashboardLayout>
       <div className="p-4 md:p-6 space-y-6 pt-14 md:pt-6">
-        <motion.div
-          initial={{ opacity: 0, y: -10 }}
-          animate={{ opacity: 1, y: 0 }}
-        >
-          <h1 className="font-display text-2xl font-bold text-foreground">
-            Cardiology Module
-          </h1>
+        <motion.div initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }}>
+          <h1 className="font-display text-2xl font-bold text-foreground">Cardiology Module</h1>
           <p className="text-sm text-muted-foreground mt-1">
-            Real-time cardiovascular monitoring via 5-pad dual-ECG configuration
+            Real-time cardiovascular monitoring via 5-pad dual-ECG configuration.
+            {connected ? null : <span className="ml-2 text-amber-400">(stream disconnected)</span>}
           </p>
         </motion.div>
 
-        {/* Cardiac Metrics Bar */}
-        <div className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-6 gap-3">
-          {[
-            { label: "Heart Rate", value: "72", unit: "BPM", color: "hsl(0, 84%, 60%)" },
-            { label: "QRS Duration", value: "0.08", unit: "sec", color: "hsl(191, 100%, 50%)" },
-            { label: "PR Interval", value: "0.16", unit: "sec", color: "hsl(160, 84%, 39%)" },
-            { label: "HRV (SDNN)", value: "42", unit: "ms", color: "hsl(38, 92%, 50%)" },
-            { label: "Cuffless BP", value: "118/76", unit: "mmHg", color: "hsl(330, 80%, 60%)" },
-            { label: "Stress Level", value: "Low", unit: "", color: "hsl(160, 84%, 39%)" },
-          ].map((m, i) => (
-            <motion.div
-              key={m.label}
-              initial={{ opacity: 0, y: 10 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: i * 0.05 }}
-              className="bg-card border border-border rounded-md p-3 shadow-card text-center"
-            >
-              <p className="text-[10px] text-muted-foreground uppercase tracking-wider mb-1">
-                {m.label}
-              </p>
-              <div className="flex items-baseline justify-center gap-1">
-                <span className="font-display text-2xl font-bold text-foreground">
-                  {m.value}
-                </span>
-                {m.unit && (
-                  <span className="text-xs text-muted-foreground">{m.unit}</span>
-                )}
-              </div>
-            </motion.div>
-          ))}
+        <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3">
+          <StatTile label="Heart rate" value={v?.heart_rate?.toFixed(0) ?? "--"} unit="bpm" tone="rose" icon={Heart} loading={!data} index={0} />
+          <StatTile label="ECG HR" value={e?.ecg_hr?.toFixed(0) ?? "--"} unit="bpm" tone="rose" icon={Activity} loading={!data} index={1} />
+          <StatTile label="HRV (RMSSD)" value={v?.hrv_rmssd?.toFixed(0) ?? "--"} unit="ms" tone="violet" icon={Waves} loading={!data} index={2} />
+          <StatTile label="Perfusion idx" value={v?.perfusion_index?.toFixed(2) ?? "--"} unit="%" tone="sky" icon={Gauge} loading={!data} index={3} />
+          <StatTile label="Signal" value={v?.signal_quality ?? "--"} tone="emerald" icon={Zap} loading={!data} index={4} />
+          <StatTile label="Activity" value={activity ?? "--"} tone="amber" icon={Wind} loading={!data} index={5} />
         </div>
 
-        {/* Live ECG + PPG */}
         <LiveECGMonitor />
 
-        {/* Vascular & Sepsis Monitoring */}
-        <motion.div
-          initial={{ opacity: 0, y: 12 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.45 }}
-          className="bg-card border border-border rounded-md p-4 shadow-card"
-        >
-          <div className="flex items-center gap-2 mb-3">
-            <Waves className="w-4 h-4 text-primary" />
-            <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
-              Vascular & Sepsis Monitoring
-            </h3>
-            <span className="text-[10px] px-2 py-0.5 rounded-sm bg-accent/10 text-accent font-semibold ml-auto">
-              NORMAL
-            </span>
-          </div>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-            {[
-              { label: "Vasoconstriction", value: "None", status: "Normal" },
-              { label: "Perfusion Index", value: "4.2%", status: "Good" },
-              { label: "Sepsis Risk (qSOFA)", value: "0/3", status: "Low Risk" },
-              { label: "Pulse Pressure", value: "42 mmHg", status: "Normal" },
-            ].map((v) => (
-              <div key={v.label} className="bg-muted/50 rounded px-3 py-2">
-                <p className="text-[10px] text-muted-foreground uppercase tracking-wider">
-                  {v.label}
-                </p>
-                <p className="text-xs font-semibold text-foreground">{v.value}</p>
-                <p className="text-[9px] text-accent font-semibold uppercase mt-0.5">
-                  {v.status}
-                </p>
-              </div>
-            ))}
-          </div>
-        </motion.div>
-
-        {/* Cardiology Expert Summary */}
-        <motion.div
-          initial={{ opacity: 0, y: 12 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.5 }}
-          className="bg-card border border-border rounded-md p-4 shadow-card"
-        >
-          <div className="flex items-center gap-2 mb-3">
-            <Heart className="w-4 h-4 text-destructive" />
-            <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
-              Cardiology Agent Summary
-            </h3>
-            <span className="text-[10px] px-2 py-0.5 rounded-sm bg-accent/10 text-accent font-semibold ml-auto">
-              ALL CLEAR
-            </span>
-          </div>
-          <p className="text-sm text-muted-foreground leading-relaxed">
-            The Cardiology AI Agent confirms stable sinus rhythm across all
-            three leads (I, II, III). No arrhythmia patterns detected via ML
-            anomaly detection. ST-segment analysis within normal limits. QT
-            interval non-prolonged at 0.38s. HRV SDNN of 42ms indicates good
-            autonomic balance. PPG waveform shows excellent perfusion with SpO₂
-            at 98%. Cuffless BP estimated at 118/76 mmHg (normotensive). Stress
-            level assessed as Low based on HRV spectral analysis.
-            Vasoconstriction index normal — no peripheral vascular compromise.
-          </p>
-        </motion.div>
-
-        {/* ML Anomaly Detection */}
-        <motion.div
-          initial={{ opacity: 0, y: 12 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.6 }}
-          className="bg-card border border-border rounded-md p-4 shadow-card"
-        >
-          <div className="flex items-center gap-2 mb-3">
-            <AlertCircle className="w-4 h-4 text-accent" />
-            <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
-              ML Anomaly Detection
-            </h3>
-          </div>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-            {[
-              { label: "Atrial Fibrillation", status: "Not Detected" },
-              { label: "Ventricular Tachycardia", status: "Not Detected" },
-              { label: "ST Elevation", status: "Normal" },
-              { label: "QT Prolongation", status: "Normal" },
-              { label: "Hypertensive Crisis", status: "Not Detected" },
-              { label: "Cardiac Tamponade", status: "Not Detected" },
-              { label: "Vasoconstriction", status: "Normal" },
-              { label: "Sepsis Markers", status: "Negative" },
-            ].map((a) => (
-              <div key={a.label} className="bg-muted/50 rounded px-3 py-2">
-                <p className="text-[10px] text-muted-foreground uppercase tracking-wider">
-                  {a.label}
-                </p>
-                <p className="text-xs font-semibold text-accent">{a.status}</p>
-              </div>
-            ))}
-          </div>
-        </motion.div>
+        <ExpertCard
+          title="Cardiology AI agent"
+          interpretation={cardiologyInterp}
+          loading={loadingInterp && !cardiologyInterp}
+        />
       </div>
     </DashboardLayout>
   );

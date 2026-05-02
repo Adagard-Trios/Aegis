@@ -6,21 +6,27 @@ import {
   Heart,
   Wind,
   Brain,
-  Shield,
   Baby,
   BarChart3,
   Settings,
   History,
-  Wifi,
   ChevronLeft,
   ChevronRight,
   Stethoscope,
   Thermometer,
-  Activity,
+  Users,
+  Bell,
+  FileJson,
+  Box,
+  ClipboardList,
 } from "lucide-react";
 
 const navItems = [
   { icon: BarChart3, label: "Dashboard", path: "/" },
+  { icon: Box, label: "Digital Twin", path: "/digital-twin" },
+  { icon: Users, label: "Patients", path: "/patients" },
+  { icon: Bell, label: "Alerts", path: "/alerts" },
+  { icon: ClipboardList, label: "Handoff", path: "/handoff" },
   { icon: Heart, label: "Cardiology", path: "/cardiology" },
   { icon: Wind, label: "Respiratory", path: "/respiratory" },
   { icon: Brain, label: "Neurology", path: "/neurology" },
@@ -28,6 +34,7 @@ const navItems = [
   { icon: Stethoscope, label: "Diagnostics", path: "/diagnostics" },
   { icon: Thermometer, label: "Environment", path: "/environment" },
   { icon: History, label: "History", path: "/history" },
+  { icon: FileJson, label: "FHIR Export", path: "/fhir-export" },
   { icon: Settings, label: "Settings", path: "/settings" },
 ];
 

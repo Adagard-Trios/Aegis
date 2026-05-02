@@ -30,6 +30,8 @@ export function setToken(token: string): void {
   if (typeof window === "undefined") return;
   try {
     window.localStorage.setItem(TOKEN_STORAGE_KEY, token);
+    // Mirror to a cookie so server-side middleware can gate routes.
+    document.cookie = `${TOKEN_STORAGE_KEY}=${token}; Path=/; Max-Age=${60 * 60 * 8}; SameSite=Lax`;
   } catch {
     /* noop */
   }
@@ -39,6 +41,7 @@ export function clearToken(): void {
   if (typeof window === "undefined") return;
   try {
     window.localStorage.removeItem(TOKEN_STORAGE_KEY);
+    document.cookie = `${TOKEN_STORAGE_KEY}=; Path=/; Max-Age=0`;
   } catch {
     /* noop */
   }
@@ -49,11 +52,23 @@ function authHeaders(): Record<string, string> {
   return t ? { Authorization: `Bearer ${t}` } : {};
 }
 
+function handle401(): void {
+  if (typeof window === "undefined") return;
+  clearToken();
+  if (window.location.pathname !== "/login") {
+    window.location.href = "/login";
+  }
+}
+
 export async function apiGet<T>(path: string, init: RequestInit = {}): Promise<T> {
   const res = await fetch(`${API_URL}${path}`, {
     ...init,
     headers: { ...(init.headers || {}), ...authHeaders() },
   });
+  if (res.status === 401) {
+    handle401();
+    throw new Error(`GET ${path} → 401`);
+  }
   if (!res.ok) throw new Error(`GET ${path} → ${res.status}`);
   return res.json() as Promise<T>;
 }
@@ -67,7 +82,28 @@ export async function apiPost<T>(path: string, body: unknown): Promise<T> {
     },
     body: JSON.stringify(body),
   });
+  if (res.status === 401) {
+    handle401();
+    throw new Error(`POST ${path} → 401`);
+  }
   if (!res.ok) throw new Error(`POST ${path} → ${res.status}`);
+  return res.json() as Promise<T>;
+}
+
+export async function apiPatch<T>(path: string, body: unknown): Promise<T> {
+  const res = await fetch(`${API_URL}${path}`, {
+    method: "PATCH",
+    headers: {
+      "Content-Type": "application/json",
+      ...authHeaders(),
+    },
+    body: JSON.stringify(body),
+  });
+  if (res.status === 401) {
+    handle401();
+    throw new Error(`PATCH ${path} → 401`);
+  }
+  if (!res.ok) throw new Error(`PATCH ${path} → ${res.status}`);
   return res.json() as Promise<T>;
 }
 
@@ -77,6 +113,10 @@ export async function apiPostForm<T>(path: string, form: FormData): Promise<T> {
     headers: { ...authHeaders() },
     body: form,
   });
+  if (res.status === 401) {
+    handle401();
+    throw new Error(`POST ${path} → 401`);
+  }
   if (!res.ok) throw new Error(`POST ${path} → ${res.status}`);
   return res.json() as Promise<T>;
 }
@@ -133,4 +173,207 @@ export function fetchHistory(
   if (params.limit) qs.set("limit", String(params.limit));
   const q = qs.toString();
   return apiGet<HistoryPoint[]>(`/api/history${q ? `?${q}` : ""}`);
+}
+
+// ─── Backend status ───────────────────────────────────────────────
+
+export interface BackendStatus {
+  vest_connected: boolean;
+  fetal_connected: boolean;
+  using_mock: boolean;
+  vest_device: string;
+  fetal_device: string;
+  sample_rate: number;
+  buffer_size: number;
+  packets_received: number;
+}
+
+export function getStatus(): Promise<BackendStatus> {
+  return apiGet<BackendStatus>("/api/status");
+}
+
+// ─── Interpretations (per-specialty agent output) ─────────────────
+
+export interface Interpretation {
+  interpretation: string;
+  severity: string;
+  severity_score: number;
+  generated_at: string;
+}
+
+export type InterpretationsMap = Record<string, Interpretation>;
+
+export function fetchInterpretations(patient_id?: string): Promise<InterpretationsMap> {
+  const q = patient_id ? `?patient_id=${encodeURIComponent(patient_id)}` : "";
+  return apiGet<InterpretationsMap>(`/api/interpretations${q}`);
+}
+
+// ─── Snapshot ─────────────────────────────────────────────────────
+
+export function getSnapshot(patient_id?: string): Promise<unknown> {
+  const q = patient_id ? `?patient_id=${encodeURIComponent(patient_id)}` : "";
+  return apiGet<unknown>(`/api/snapshot${q}`);
+}
+
+// ─── Simulation ───────────────────────────────────────────────────
+
+export type Scenario = "normal" | "tachycardia" | "hypoxia" | "fetal_decel" | "arrhythmia";
+
+export function getScenario(): Promise<{ scenario: Scenario; available: Scenario[] }> {
+  return apiGet("/api/simulation/scenario");
+}
+
+export function setScenario(scenario: Scenario) {
+  return apiPost<{ status: string; scenario: Scenario }>("/api/simulation/scenario", { scenario });
+}
+
+export function setSimulationMode(mode: string) {
+  return apiPost<{ status: string; mode: string }>("/api/simulation/mode", { mode });
+}
+
+export function injectMedication(medication: string, dose: number) {
+  return apiPost<{ status: string; medication: string; dose: number }>("/api/simulation/medicate", {
+    medication,
+    dose,
+  });
+}
+
+export function setCYP2D6(status: "Normal Metabolizer" | "Poor Metabolizer") {
+  return apiPost<{ status: string; cyp2d6_status: string }>("/api/simulation/cyp2d6", { status });
+}
+
+// ─── Patients (Phase 3) ───────────────────────────────────────────
+
+export interface Patient {
+  id: string;
+  mrn: string | null;
+  name: string;
+  dob: string | null;
+  sex: string | null;
+  gestational_age_weeks: number | null;
+  conditions: string[];
+  assigned_clinician_id: string | null;
+  created_at: string;
+}
+
+export function listPatients(): Promise<Patient[]> {
+  return apiGet<Patient[]>("/api/patients");
+}
+
+export function getPatient(id: string): Promise<Patient> {
+  return apiGet<Patient>(`/api/patients/${encodeURIComponent(id)}`);
+}
+
+export function createPatient(p: Partial<Patient> & { name: string }): Promise<Patient> {
+  return apiPost<Patient>("/api/patients", p);
+}
+
+export function updatePatient(id: string, p: Partial<Patient>): Promise<Patient> {
+  return apiPatch<Patient>(`/api/patients/${encodeURIComponent(id)}`, p);
+}
+
+// ─── Alerts (Phase 4) ─────────────────────────────────────────────
+
+export interface Alert {
+  id: number;
+  patient_id: string;
+  severity: number;
+  source: string;
+  message: string;
+  acknowledged_by: string | null;
+  acknowledged_at: string | null;
+  created_at: string;
+}
+
+export function fetchAlerts(params: { patient_id?: string; unacknowledged?: boolean; limit?: number } = {}) {
+  const qs = new URLSearchParams();
+  if (params.patient_id) qs.set("patient_id", params.patient_id);
+  if (params.unacknowledged) qs.set("unacknowledged", "true");
+  if (params.limit) qs.set("limit", String(params.limit));
+  const q = qs.toString();
+  return apiGet<Alert[]>(`/api/alerts${q ? `?${q}` : ""}`);
+}
+
+export function acknowledgeAlert(id: number, note?: string) {
+  return apiPost<{ status: string }>(`/api/alerts/${id}/acknowledge`, { note: note || "" });
+}
+
+export function buildAlertsStreamUrl(patient_id?: string): string {
+  return buildStreamUrl("/api/alerts/stream", patient_id ? { patient_id } : {});
+}
+
+// ─── Agent invocation (Phase 5) ───────────────────────────────────
+
+export interface AgentResponse {
+  reply: string;
+  severity: string;
+  severity_score: number;
+  specialty: string;
+}
+
+export function askAgent(specialty: string, message: string, patient_id?: string) {
+  return apiPost<AgentResponse>("/api/agent/ask", { specialty, message, patient_id });
+}
+
+export function runAgentNow(patient_id?: string, specialty?: string) {
+  const qs = new URLSearchParams();
+  if (patient_id) qs.set("patient_id", patient_id);
+  if (specialty) qs.set("specialty", specialty);
+  return apiPost<{ status: string; ran: string[] }>(`/api/agent/run-now?${qs}`, {});
+}
+
+// ─── Care plans (Phase 6) ─────────────────────────────────────────
+
+export interface CarePlan {
+  id: string;
+  name: string;
+  conditions: string[];
+  thresholds: Record<string, { min?: number; max?: number; severity: number }>;
+  monitoring_frequency_s: number;
+}
+
+export function listCarePlans(): Promise<CarePlan[]> {
+  return apiGet<CarePlan[]>("/api/care-plans");
+}
+
+export function assignCarePlan(patient_id: string, care_plan_id: string) {
+  return apiPost<{ status: string }>(`/api/patients/${encodeURIComponent(patient_id)}/care-plan`, {
+    care_plan_id,
+  });
+}
+
+// ─── FHIR (Phase 7) ───────────────────────────────────────────────
+
+export const FHIR_RESOURCES = [
+  { key: "observation", path: "/api/fhir/Observation/latest", label: "Observation (latest)" },
+  { key: "bundle", path: "/api/fhir/Bundle/latest", label: "Bundle (latest)" },
+  { key: "diag-all", path: "/api/fhir/DiagnosticReport/latest", label: "DiagnosticReport (all specialties)" },
+  { key: "device", path: "/api/fhir/Device", label: "Device" },
+] as const;
+
+export function fetchFhir<T = unknown>(path: string, patient_id?: string): Promise<T> {
+  const q = patient_id ? `?patient_id=${encodeURIComponent(patient_id)}` : "";
+  return apiGet<T>(`${path}${q}`);
+}
+
+// ─── Auth verification (Phase 8) ──────────────────────────────────
+
+export interface AuthMe {
+  user: { sub: string; anonymous?: boolean };
+  auth_enabled: boolean;
+}
+
+export function getMe(): Promise<AuthMe> {
+  return apiGet<AuthMe>("/api/auth/me");
+}
+
+// ─── Emergency (Phase 12) ─────────────────────────────────────────
+
+export function postEmergency(payload: {
+  patient_id?: string;
+  message: string;
+  vitals: Record<string, unknown>;
+  geolocation?: { lat: number; lon: number };
+}) {
+  return apiPost<{ status: string; webhook?: string }>("/api/emergency", payload);
 }

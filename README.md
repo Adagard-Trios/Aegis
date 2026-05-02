@@ -205,7 +205,7 @@ medverse/
 ./start.sh
 ```
 
-Boots the FastAPI backend on `:8000` and the Next.js frontend on `:3000` in parallel; Ctrl+C tears both down. See [DEMO.md](DEMO.md) for the 5-minute demo walkthrough and the full endpoint reference. The steps below are the manual equivalent.
+Boots the FastAPI backend on `:8000` and the Next.js frontend on `:3000` in parallel; Ctrl+C tears both down. See [DEMO.md](DEMO.md) for the 5-minute demo walkthrough, the full endpoint reference, and the **cloud deployment runbook** (Render + Vercel + Timescale Cloud, ~$7/mo). The steps below are the manual equivalent for local dev.
 
 ### 1. Backend
 

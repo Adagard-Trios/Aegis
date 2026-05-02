@@ -3,6 +3,8 @@
 import { useState } from "react";
 import { MedVerseSidebar } from "./MedVerseSidebar";
 import { ExpertChatPanel } from "./ExpertChatPanel";
+import { AlertBanner } from "./AlertBanner";
+import { EmergencyButton } from "./EmergencyButton";
 import { Menu } from "lucide-react";
 
 export default function DashboardLayout({
@@ -54,6 +56,8 @@ export default function DashboardLayout({
 
       <main className="flex-1 overflow-y-auto">{children}</main>
       <ExpertChatPanel />
+      <AlertBanner />
+      <EmergencyButton />
     </div>
   );
 }

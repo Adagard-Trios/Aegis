@@ -28,7 +28,10 @@ from urllib.parse import urlparse
 logger = logging.getLogger(__name__)
 
 DEFAULT_PATIENT_ID = "medverse-demo-patient"
-DB_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "aegis_local.db")
+DB_PATH = os.environ.get(
+    "MEDVERSE_SQLITE_PATH",
+    os.path.join(os.path.dirname(__file__), "..", "..", "aegis_local.db"),
+)
 
 # ─── Backend selection ─────────────────────────────────────────────────────
 
@@ -106,6 +109,51 @@ def init_db() -> None:
             )
             """
         )
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS patients (
+                id                      TEXT PRIMARY KEY,
+                mrn                     TEXT UNIQUE,
+                name                    TEXT NOT NULL,
+                dob                     TEXT,
+                sex                     TEXT,
+                gestational_age_weeks   INTEGER,
+                conditions              TEXT,
+                assigned_clinician_id   TEXT,
+                care_plan_id            TEXT,
+                created_at              TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS alerts (
+                id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                patient_id          TEXT NOT NULL,
+                severity            INTEGER NOT NULL,
+                source              TEXT,
+                message             TEXT,
+                snapshot_json       TEXT,
+                acknowledged_by     TEXT,
+                acknowledged_at     TEXT,
+                created_at          TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS audit_log (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts              TEXT DEFAULT CURRENT_TIMESTAMP,
+                user_id         TEXT,
+                action          TEXT,
+                resource_type   TEXT,
+                resource_id     TEXT,
+                ip              TEXT,
+                user_agent      TEXT
+            )
+            """
+        )
         # Back-compat: add patient_id column if the table existed before.
         for table in ("telemetry", "interpretations"):
             try:
@@ -121,6 +169,13 @@ def init_db() -> None:
         cursor.execute(
             "CREATE INDEX IF NOT EXISTS ix_interp_patient_spec_ts "
             "ON interpretations(patient_id, specialty, id DESC)"
+        )
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS ix_alerts_patient_ack "
+            "ON alerts(patient_id, acknowledged_at, id DESC)"
+        )
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS ix_audit_ts ON audit_log(ts DESC)"
         )
         conn.commit()
         conn.close()
@@ -379,4 +434,334 @@ def get_history(
         return series[-limit:]
     except Exception as e:
         logger.error(f"Failed to fetch history: {e}")
+        return []
+
+
+# ─── Patients (Phase 3) ────────────────────────────────────────────────────
+
+
+def _patient_row(r) -> Dict[str, Any]:
+    return {
+        "id": r[0],
+        "mrn": r[1],
+        "name": r[2],
+        "dob": r[3],
+        "sex": r[4],
+        "gestational_age_weeks": r[5],
+        "conditions": json.loads(r[6]) if r[6] else [],
+        "assigned_clinician_id": r[7],
+        "care_plan_id": r[8] if len(r) > 8 else None,
+        "created_at": str(r[9]) if len(r) > 9 and r[9] else None,
+    }
+
+
+PATIENT_COLS = "id, mrn, name, dob, sex, gestational_age_weeks, conditions, assigned_clinician_id, care_plan_id, created_at"
+
+
+def list_patients() -> List[Dict[str, Any]]:
+    try:
+        if _using_postgres():
+            conn = _pg_connect()
+            cur = conn.cursor()
+            cur.execute(f"SELECT {PATIENT_COLS} FROM patients ORDER BY created_at DESC")
+            rows = cur.fetchall()
+            conn.close()
+            return [_patient_row(r) for r in rows]
+        else:
+            conn = _sqlite_connect()
+            cur = conn.execute(f"SELECT {PATIENT_COLS} FROM patients ORDER BY created_at DESC")
+            rows = cur.fetchall()
+            conn.close()
+            return [_patient_row(r) for r in rows]
+    except Exception as e:
+        logger.error(f"list_patients failed: {e}")
+        return []
+
+
+def get_patient(patient_id: str) -> Optional[Dict[str, Any]]:
+    try:
+        if _using_postgres():
+            conn = _pg_connect()
+            cur = conn.cursor()
+            cur.execute(f"SELECT {PATIENT_COLS} FROM patients WHERE id=%s", (patient_id,))
+            r = cur.fetchone()
+            conn.close()
+        else:
+            conn = _sqlite_connect()
+            cur = conn.execute(f"SELECT {PATIENT_COLS} FROM patients WHERE id=?", (patient_id,))
+            r = cur.fetchone()
+            conn.close()
+        return _patient_row(r) if r else None
+    except Exception as e:
+        logger.error(f"get_patient failed: {e}")
+        return None
+
+
+def upsert_patient(p: Dict[str, Any]) -> Dict[str, Any]:
+    pid = p.get("id") or f"pt_{int(datetime.now().timestamp() * 1000)}"
+    conditions = json.dumps(p.get("conditions") or [])
+    try:
+        if _using_postgres():
+            conn = _pg_connect()
+            cur = conn.cursor()
+            cur.execute(
+                """
+                INSERT INTO patients (id, mrn, name, dob, sex, gestational_age_weeks,
+                                      conditions, assigned_clinician_id, care_plan_id)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                ON CONFLICT (id) DO UPDATE SET
+                  mrn=EXCLUDED.mrn, name=EXCLUDED.name, dob=EXCLUDED.dob,
+                  sex=EXCLUDED.sex, gestational_age_weeks=EXCLUDED.gestational_age_weeks,
+                  conditions=EXCLUDED.conditions,
+                  assigned_clinician_id=EXCLUDED.assigned_clinician_id,
+                  care_plan_id=EXCLUDED.care_plan_id
+                """,
+                (pid, p.get("mrn"), p.get("name"), p.get("dob"), p.get("sex"),
+                 p.get("gestational_age_weeks"), conditions,
+                 p.get("assigned_clinician_id"), p.get("care_plan_id")),
+            )
+            conn.commit()
+            conn.close()
+        else:
+            conn = _sqlite_connect()
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO patients
+                (id, mrn, name, dob, sex, gestational_age_weeks, conditions,
+                 assigned_clinician_id, care_plan_id, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?,
+                  COALESCE((SELECT created_at FROM patients WHERE id=?), CURRENT_TIMESTAMP))
+                """,
+                (pid, p.get("mrn"), p.get("name"), p.get("dob"), p.get("sex"),
+                 p.get("gestational_age_weeks"), conditions,
+                 p.get("assigned_clinician_id"), p.get("care_plan_id"), pid),
+            )
+            conn.commit()
+            conn.close()
+        return get_patient(pid) or {}
+    except Exception as e:
+        logger.error(f"upsert_patient failed: {e}")
+        return {}
+
+
+# ─── Alerts (Phase 4) ──────────────────────────────────────────────────────
+
+
+def insert_alert(patient_id: str, severity: int, source: str, message: str,
+                 snapshot: Optional[dict] = None) -> int:
+    snap_json = json.dumps(snapshot or {})
+    try:
+        if _using_postgres():
+            conn = _pg_connect()
+            cur = conn.cursor()
+            cur.execute(
+                """INSERT INTO alerts (patient_id, severity, source, message, snapshot_json)
+                   VALUES (%s,%s,%s,%s,%s) RETURNING id""",
+                (patient_id, severity, source, message, snap_json),
+            )
+            new_id = cur.fetchone()[0]
+            conn.commit()
+            conn.close()
+            return int(new_id)
+        else:
+            conn = _sqlite_connect()
+            cur = conn.execute(
+                """INSERT INTO alerts (patient_id, severity, source, message, snapshot_json)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (patient_id, severity, source, message, snap_json),
+            )
+            new_id = cur.lastrowid
+            conn.commit()
+            conn.close()
+            return int(new_id) if new_id is not None else 0
+    except Exception as e:
+        logger.error(f"insert_alert failed: {e}")
+        return 0
+
+
+def list_alerts(patient_id: Optional[str] = None, unacknowledged: bool = False,
+                limit: int = 100) -> List[Dict[str, Any]]:
+    try:
+        clauses = []
+        params: List[Any] = []
+        if patient_id:
+            clauses.append("patient_id=%s" if _using_postgres() else "patient_id=?")
+            params.append(patient_id)
+        if unacknowledged:
+            clauses.append("acknowledged_at IS NULL")
+        where = "WHERE " + " AND ".join(clauses) if clauses else ""
+        if _using_postgres():
+            conn = _pg_connect()
+            cur = conn.cursor()
+            cur.execute(
+                f"""SELECT id, patient_id, severity, source, message,
+                          acknowledged_by, acknowledged_at, created_at
+                       FROM alerts {where}
+                   ORDER BY id DESC LIMIT %s""",
+                tuple(params + [limit]),
+            )
+            rows = cur.fetchall()
+            conn.close()
+        else:
+            conn = _sqlite_connect()
+            cur = conn.execute(
+                f"""SELECT id, patient_id, severity, source, message,
+                          acknowledged_by, acknowledged_at, created_at
+                       FROM alerts {where}
+                   ORDER BY id DESC LIMIT ?""",
+                tuple(params + [limit]),
+            )
+            rows = cur.fetchall()
+            conn.close()
+        return [
+            {
+                "id": r[0],
+                "patient_id": r[1],
+                "severity": r[2],
+                "source": r[3],
+                "message": r[4],
+                "acknowledged_by": r[5],
+                "acknowledged_at": str(r[6]) if r[6] else None,
+                "created_at": str(r[7]) if r[7] else None,
+            }
+            for r in rows
+        ]
+    except Exception as e:
+        logger.error(f"list_alerts failed: {e}")
+        return []
+
+
+def acknowledge_alert(alert_id: int, user_id: str, note: str = "") -> bool:
+    try:
+        if _using_postgres():
+            conn = _pg_connect()
+            cur = conn.cursor()
+            cur.execute(
+                """UPDATE alerts SET acknowledged_by=%s, acknowledged_at=now(),
+                                     message = COALESCE(message,'') || CASE WHEN %s != ''
+                                       THEN E'\\n[ack note] ' || %s ELSE '' END
+                   WHERE id=%s""",
+                (user_id, note, note, alert_id),
+            )
+            updated = cur.rowcount
+            conn.commit()
+            conn.close()
+        else:
+            conn = _sqlite_connect()
+            cur = conn.execute(
+                """UPDATE alerts SET acknowledged_by=?, acknowledged_at=CURRENT_TIMESTAMP,
+                                     message = COALESCE(message,'') || CASE WHEN ?<>''
+                                       THEN char(10) || '[ack note] ' || ? ELSE '' END
+                   WHERE id=?""",
+                (user_id, note, note, alert_id),
+            )
+            updated = cur.rowcount
+            conn.commit()
+            conn.close()
+        return updated > 0
+    except Exception as e:
+        logger.error(f"acknowledge_alert failed: {e}")
+        return False
+
+
+def find_recent_alert(patient_id: str, source: str, within_seconds: int = 60) -> bool:
+    """Returns True if an alert from `source` for `patient_id` was created in the last `within_seconds`."""
+    try:
+        if _using_postgres():
+            conn = _pg_connect()
+            cur = conn.cursor()
+            cur.execute(
+                """SELECT 1 FROM alerts WHERE patient_id=%s AND source=%s
+                   AND created_at > now() - (%s::text || ' seconds')::interval LIMIT 1""",
+                (patient_id, source, within_seconds),
+            )
+            r = cur.fetchone()
+            conn.close()
+            return r is not None
+        else:
+            from datetime import timedelta
+            cutoff = (datetime.now() - timedelta(seconds=within_seconds)).isoformat(sep=" ")
+            conn = _sqlite_connect()
+            cur = conn.execute(
+                "SELECT 1 FROM alerts WHERE patient_id=? AND source=? AND created_at>? LIMIT 1",
+                (patient_id, source, cutoff),
+            )
+            r = cur.fetchone()
+            conn.close()
+            return r is not None
+    except Exception:
+        return False
+
+
+# ─── Audit log (Phase 8) ───────────────────────────────────────────────────
+
+
+def log_audit(user_id: Optional[str], action: str, resource_type: str,
+              resource_id: Optional[str] = None, ip: Optional[str] = None,
+              user_agent: Optional[str] = None) -> None:
+    try:
+        if _using_postgres():
+            conn = _pg_connect()
+            cur = conn.cursor()
+            cur.execute(
+                """INSERT INTO audit_log (user_id, action, resource_type, resource_id, ip, user_agent)
+                   VALUES (%s,%s,%s,%s,%s,%s)""",
+                (user_id, action, resource_type, resource_id, ip, user_agent),
+            )
+            conn.commit()
+            conn.close()
+        else:
+            conn = _sqlite_connect()
+            conn.execute(
+                """INSERT INTO audit_log (user_id, action, resource_type, resource_id, ip, user_agent)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (user_id, action, resource_type, resource_id, ip, user_agent),
+            )
+            conn.commit()
+            conn.close()
+    except Exception as e:
+        logger.error(f"log_audit failed: {e}")
+
+
+def list_audit(limit: int = 200, user_id: Optional[str] = None,
+               action: Optional[str] = None) -> List[Dict[str, Any]]:
+    try:
+        clauses = []
+        params: List[Any] = []
+        if user_id:
+            clauses.append("user_id=%s" if _using_postgres() else "user_id=?")
+            params.append(user_id)
+        if action:
+            clauses.append("action=%s" if _using_postgres() else "action=?")
+            params.append(action)
+        where = "WHERE " + " AND ".join(clauses) if clauses else ""
+        if _using_postgres():
+            conn = _pg_connect()
+            cur = conn.cursor()
+            cur.execute(
+                f"""SELECT id, ts, user_id, action, resource_type, resource_id, ip, user_agent
+                       FROM audit_log {where} ORDER BY id DESC LIMIT %s""",
+                tuple(params + [limit]),
+            )
+            rows = cur.fetchall()
+            conn.close()
+        else:
+            conn = _sqlite_connect()
+            cur = conn.execute(
+                f"""SELECT id, ts, user_id, action, resource_type, resource_id, ip, user_agent
+                       FROM audit_log {where} ORDER BY id DESC LIMIT ?""",
+                tuple(params + [limit]),
+            )
+            rows = cur.fetchall()
+            conn.close()
+        return [
+            {
+                "id": r[0], "ts": str(r[1]) if r[1] else None,
+                "user_id": r[2], "action": r[3], "resource_type": r[4],
+                "resource_id": r[5], "ip": r[6], "user_agent": r[7],
+            }
+            for r in rows
+        ]
+    except Exception as e:
+        logger.error(f"list_audit failed: {e}")
         return []

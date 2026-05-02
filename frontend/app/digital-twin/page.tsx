@@ -6,6 +6,7 @@ import { OrbitControls, Environment, ContactShadows, Stars, Sparkles } from '@re
 import MedicalModel from './MedicalModel';
 import { useVestStream } from '../hooks/useVestStream';
 import { PharmacologyPanel } from '../components/PharmacologyPanel';
+import { ScenarioPicker } from '../components/ScenarioPicker';
 
 export default function DigitalTwinPage() {
   const { data, connected, error } = useVestStream();
@@ -107,9 +108,10 @@ export default function DigitalTwinPage() {
             </div>
         </div>
 
-        {/* PK/PD centerpiece — drives heart-rate / contractions via /api/simulation/medicate */}
-        <div className="absolute top-8 right-8 pointer-events-auto">
+        {/* PK/PD centerpiece + scenario picker — drives the live demo */}
+        <div className="absolute top-8 right-8 pointer-events-auto space-y-4 max-h-[calc(100vh-4rem)] overflow-y-auto pr-1">
           <PharmacologyPanel />
+          <ScenarioPicker />
         </div>
 
       </div>
