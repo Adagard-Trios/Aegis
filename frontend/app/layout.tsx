@@ -2,10 +2,10 @@ import type { Metadata, Viewport } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "MedVerse | Clinical Wearable Platform",
+  title: "Aegis | Clinical Intelligence Platform",
   description:
-    "Context-Aware Multi-Agent Clinical Wearable Platform for personalized medicine — real-time telemetry dashboard",
-  authors: [{ name: "MedVerse" }],
+    "Context-Aware Multi-Agent Clinical Wearable Platform — real-time telemetry, AI diagnostics, and 3D digital twin",
+  authors: [{ name: "Aegis" }],
   manifest: "/manifest.json",
   openGraph: {
     title: "MedVerse Clinical Platform",
