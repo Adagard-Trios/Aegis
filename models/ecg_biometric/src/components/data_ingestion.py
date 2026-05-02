@@ -66,8 +66,15 @@ class DataIngestion:
 
     def _load_dataframe(self) -> pd.DataFrame:
         target = dl.cache_dir("ecg_biometric", "ecgid")
-        if not dl.is_dir_nonempty(target):
-            logging.info("ecg_biometric: downloading ECG-ID from PhysioNet")
+        # ECG-ID has 90 subjects (Person_01 ... Person_90). A partial cache
+        # would silently train on a tiny subset and look broken. Re-download
+        # if we don't have at least 70 subject dirs (some flexibility for
+        # the rare PhysioNet hiccup).
+        existing_persons = list(target.glob("Person_*"))
+        if len(existing_persons) < 70:
+            logging.info(
+                f"ecg_biometric: cache has {len(existing_persons)}/90 subjects — downloading ECG-ID from PhysioNet"
+            )
             dl.download_physionet(PHYSIONET_URL, target)
         # ECG-ID layout: <root>/Person_XX/rec_Y(.dat,.hea,.atr)
         rows = []

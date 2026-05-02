@@ -34,16 +34,18 @@ class DataIngestion:
 
     def _load_dataframe(self) -> pd.DataFrame:
         target = dl.cache_dir("ecg_arrhythmia", "ptbxl")
-        if not dl.is_dir_nonempty(target):
+        # Marker-file check: PTB-XL is "complete" only when its index CSV exists.
+        # is_dir_nonempty alone is fooled by partial caches from a prior crash.
+        meta = next(target.rglob("ptbxl_database.csv"), None)
+        if meta is None:
             dl.require_large(
                 reason="PTB-XL is 25 GB.",
                 dataset_name="PTB-XL",
                 size="25 GB",
             )
-            logging.info("ecg_arrhythmia: downloading PTB-XL from PhysioNet")
+            logging.info("ecg_arrhythmia: downloading PTB-XL from PhysioNet (this can take a while)")
             dl.download_physionet(PHYSIONET_URL, target)
-        # PTB-XL has a top-level ptbxl_database.csv with one row per record + scp_codes
-        meta = next(target.rglob("ptbxl_database.csv"), None)
+            meta = next(target.rglob("ptbxl_database.csv"), None)
         if meta is None:
             raise dl.DatasetUnavailable(
                 "ecg_arrhythmia: ptbxl_database.csv not found",

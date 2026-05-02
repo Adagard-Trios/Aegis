@@ -63,6 +63,6 @@ def save_numpy_array(file_path: str, array: np.ndarray) -> None:
 def load_numpy_array(file_path: str) -> np.ndarray:
     try:
         with open(file_path, "rb") as f:
-            return np.load(f, allow_pickle=False)
+            return np.load(f, allow_pickle=True)
     except Exception as e:
         raise MedVerseException(e, sys) from e

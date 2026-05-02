@@ -33,11 +33,14 @@ class DataIngestion:
 
     def _load_dataframe(self) -> pd.DataFrame:
         target = dl.cache_dir("cardiac_age", "ptbxl")
-        if not dl.is_dir_nonempty(target):
-            dl.require_large(reason="PTB-XL is 25 GB.", dataset_name="PTB-XL", size="25 GB")
-            logging.info("cardiac_age: downloading PTB-XL from PhysioNet")
-            dl.download_physionet(PHYSIONET_URL, target)
+        # Marker-file check — partial caches from a prior crash would otherwise
+        # be treated as complete by is_dir_nonempty.
         meta = next(target.rglob("ptbxl_database.csv"), None)
+        if meta is None:
+            dl.require_large(reason="PTB-XL is 25 GB.", dataset_name="PTB-XL", size="25 GB")
+            logging.info("cardiac_age: downloading PTB-XL from PhysioNet (this can take a while)")
+            dl.download_physionet(PHYSIONET_URL, target)
+            meta = next(target.rglob("ptbxl_database.csv"), None)
         if meta is None:
             raise dl.DatasetUnavailable(
                 "cardiac_age: ptbxl_database.csv not found",

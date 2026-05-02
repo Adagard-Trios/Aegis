@@ -57,8 +57,13 @@ class DataIngestion:
 
     def _load_dataframe(self) -> pd.DataFrame:
         target = dl.cache_dir("preterm_labour", "tpehgdb")
-        if not dl.is_dir_nonempty(target):
-            logging.info("preterm_labour: downloading TPEHGDB from PhysioNet")
+        # TPEHGDB has ~300 records. Re-download if we have noticeably fewer
+        # than expected so a partial cache doesn't masquerade as complete.
+        existing_hea = list(target.rglob("*.hea"))
+        if len(existing_hea) < 250:
+            logging.info(
+                f"preterm_labour: cache has {len(existing_hea)} .hea files (<250) — downloading TPEHGDB from PhysioNet"
+            )
             dl.download_physionet(PHYSIONET_URL, target)
         rows = []
         for hea in sorted(target.rglob("*.hea")):

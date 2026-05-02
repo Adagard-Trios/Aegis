@@ -17,6 +17,15 @@ from __future__ import annotations
 import os
 import sys
 
+# Force UTF-8 stdio so logging non-ASCII chars (e.g. unicode arrows from
+# pipeline_utils warnings) doesn't crash the Windows cp1252 console.
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
+
+
 # Make the repo-root pipeline_utils.py importable while running from this
 # pipeline's directory. (cwd-then-repo-root keeps the local `src` package
 # winning the namespace race.)

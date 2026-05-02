@@ -41,6 +41,14 @@ import time
 from pathlib import Path
 from typing import List, Optional
 
+# Force UTF-8 stdio so the unicode separator + arrow chars in this script
+# don't crash on Windows cp1252 consoles.
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
+
 REPO = Path(__file__).resolve().parent
 ENV_FILE = REPO / ".env"
 
@@ -124,6 +132,8 @@ def run_one(slug: str, *, clean: bool, timeout: int) -> dict:
     print(f"\n{'━' * 70}\n[{slug}]  cd {pipeline_dir.relative_to(REPO)} && python main.py\n{'━' * 70}", flush=True)
 
     t0 = time.time()
+    child_env = os.environ.copy()
+    child_env["PYTHONIOENCODING"] = "utf-8"  # so cp1252 console doesn't crash subprocesses
     try:
         proc = subprocess.Popen(
             [sys.executable, "main.py"],
@@ -134,6 +144,7 @@ def run_one(slug: str, *, clean: bool, timeout: int) -> dict:
             encoding="utf-8",
             errors="replace",
             bufsize=1,
+            env=child_env,
         )
     except Exception as e:
         return {"slug": slug, "status": "fail", "error_msg": f"failed to spawn: {e}"}

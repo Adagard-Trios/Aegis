@@ -44,7 +44,8 @@ class DatasetUnavailable(RuntimeError):
     """
 
     def __init__(self, message: str, *, hint: str = ""):
-        full = message if not hint else f"{message}\n→ {hint}"
+        # Use ASCII arrow so the message survives Windows cp1252 console logging
+        full = message if not hint else f"{message}\n-> {hint}"
         super().__init__(full)
         self.hint = hint
 
