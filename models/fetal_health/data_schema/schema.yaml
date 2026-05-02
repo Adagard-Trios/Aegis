@@ -1,0 +1,20 @@
+# Input/output schema for Foetal Health Analyser.
+# Fill in the columns expected by the pipeline. Used by
+# src/components/data_validation.py to enforce a contract before training
+# or batch prediction.
+
+inputs:
+  # - name: feature_1
+  #   dtype: float64
+  # - name: feature_2
+  #   dtype: int64
+
+target:
+  # name: label
+  # dtype: int64
+
+# Optional list of categorical columns for one-hot / label encoding.
+categorical: []
+
+# Optional drift-monitoring tolerance per feature (KS p-value threshold).
+drift_tolerance: 0.05

@@ -180,10 +180,21 @@ medverse/
 ├── PlatformIO/
 │   ├── vest/                 # ESP32-S3 vest firmware + WIRING.md
 │   └── fetal_monitor/        # ESP32-Dev abdomen/fetal firmware
-└── models/                   # ML weights — adapters load from here when present
-    ├── ecg/ecgfounder/       # weights.pt, labels.txt (user-supplied)
-    ├── ecg/biometric_siamese/# weights.pt (user-supplied)
-    └── pulmonary/icbhi_cnn/  # weights.pt, class_names.json (user-supplied)
+└── models/                   # 12 self-contained ML pipelines (one per clinical model)
+    ├── README.md             # canonical structure + per-pipeline index
+    ├── registry.py           # programmatic pipeline registry
+    ├── ecg_arrhythmia/       # cardiology — classification
+    ├── cardiac_age/          # cardiology — regression
+    ├── ecg_biometric/        # cardiology — metric learning (Siamese)
+    ├── stress_ans/           # autonomic — classification
+    ├── lung_sound/           # pulmonary — classification
+    ├── parkinson_screener/   # neurology — classification
+    ├── fetal_health/         # obstetrics — classification
+    ├── preterm_labour/       # obstetrics — classification
+    ├── bowel_motility/       # GI — classification
+    ├── skin_disease/         # dermatology — classification
+    ├── retinal_disease/      # ocular — classification
+    └── retinal_age/          # ocular — regression
 ```
 
 ## Prerequisites
