@@ -1,12 +1,22 @@
-"""Model trainer — fit a model on the transformed arrays.
+"""fetal_health — ModelTrainer
 
-Override `_build_model` and (optionally) `_compute_metrics` for the model
-family this pipeline uses.
+Source notebook: notebooks/source.ipynb
+Notebook architecture: RandomForestClassifier on UCI CTG (n=300 max_depth=15) + optional CNN-BiLSTM on raw FHR.
+
+This pipeline currently trains on the UCI CTG numeric (~22 numeric) features produced by
+DataIngestion._load_dataframe(). To upgrade to the notebook's full
+architecture you'd extend `_load_dataframe` to return the raw raw FHR + UC waveforms
+and replace `_build_model` with the notebook's PyTorch / Keras model.
 """
 from __future__ import annotations
 
 import os
 import sys
+from typing import Any
+
+_REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", ".."))
+if _REPO_ROOT not in sys.path:
+    sys.path.append(_REPO_ROOT)
 
 from src.entity.config_entity import ModelTrainerConfig
 from src.entity.artifact_entity import (
@@ -17,7 +27,7 @@ from src.entity.artifact_entity import (
 from src.exception.exception import MedVerseException
 from src.logging.logger import logging
 from src.utils.main_utils import load_numpy_array, load_object, save_object
-from src.utils.ml_utils.metric import classification_metrics
+from src.utils.ml_utils.metric import classification_metrics, regression_metrics
 from src.utils.ml_utils.model import ModelEstimator
 
 
@@ -27,10 +37,9 @@ class ModelTrainer:
         self.config = config
 
     def _build_model(self):
-        """Override in per-pipeline subclass to return a fitted-able estimator."""
-        raise NotImplementedError(
-            "ModelTrainer._build_model is a stub. Override it to return an "
-            "untrained sklearn / torch / lightgbm estimator for this pipeline."
+        from sklearn.ensemble import RandomForestClassifier
+        return RandomForestClassifier(
+            n_estimators=300, max_depth=15, class_weight="balanced", n_jobs=-1, random_state=42,
         )
 
     def _compute_metrics(self, y_true, y_pred) -> ClassificationMetricArtifact:
@@ -50,10 +59,8 @@ class ModelTrainer:
             model = self._build_model()
             model.fit(x_train, y_train)
 
-            train_pred = model.predict(x_train)
-            test_pred = model.predict(x_test)
-            train_metric = self._compute_metrics(y_train, train_pred)
-            test_metric = self._compute_metrics(y_test, test_pred)
+            train_metric = self._compute_metrics(y_train, model.predict(x_train))
+            test_metric = self._compute_metrics(y_test, model.predict(x_test))
 
             if test_metric.f1_score < self.config.expected_accuracy:
                 logging.warning(

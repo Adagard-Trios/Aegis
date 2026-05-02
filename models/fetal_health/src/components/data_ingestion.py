@@ -37,9 +37,10 @@ class DataIngestion:
         if not ctg_xls.exists() or ctg_xls.stat().st_size == 0:
             logging.info("fetal_health: downloading UCI CTG.xls")
             dl.download_file(UCI_CTG_URL, ctg_xls)
-        # The UCI CTG file uses sheet name "Raw Data"; header row is 1.
-        dl.require_module("openpyxl", "pip install openpyxl>=3.1")
-        df = pd.read_excel(ctg_xls, sheet_name="Raw Data", header=1)
+        # UCI CTG.xls is a legacy .xls — needs xlrd (not openpyxl). Headers are
+        # on row 0 of the "Raw Data" sheet; rows after the data have NaN NSP.
+        dl.require_module("xlrd", "pip install xlrd>=2.0.1")
+        df = pd.read_excel(ctg_xls, sheet_name="Raw Data")
         # Drop rows where the target is NaN (footer rows in the original sheet)
         if "NSP" not in df.columns:
             raise dl.DatasetUnavailable(
