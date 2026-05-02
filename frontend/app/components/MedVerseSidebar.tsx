@@ -76,7 +76,7 @@ export function MedVerseSidebar({
             animate={{ opacity: 1 }}
             className="font-display font-bold text-lg text-sidebar-foreground tracking-wide"
           >
-            AEGIS
+            MEDVERSE
           </motion.span>
         )}
       </div>
@@ -87,7 +87,7 @@ export function MedVerseSidebar({
           <div className="w-2 h-2 rounded-full bg-vital-green animate-pulse-glow flex-shrink-0" />
           {!collapsed && (
             <span className="text-xs text-sidebar-foreground/70 font-body">
-              Aegis Vest Online
+              MedVerse Vest Online
             </span>
           )}
         </div>

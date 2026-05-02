@@ -54,7 +54,7 @@ export default function LoginPage() {
             </div>
             <div className="text-center">
               <h1 className="font-display text-xl font-bold tracking-tight text-foreground">
-                Welcome to Aegis
+                Welcome to MedVerse
               </h1>
               <p className="text-xs text-muted-foreground mt-1">
                 Sign in to access your clinical dashboard

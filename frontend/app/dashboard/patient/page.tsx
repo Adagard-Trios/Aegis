@@ -78,7 +78,7 @@ export default function PatientDashboard() {
           <div className="w-7 h-7 rounded-lg bg-primary flex items-center justify-center">
             <Shield className="w-4 h-4 text-primary-foreground" />
           </div>
-          <span className="font-display font-bold text-base text-sidebar-foreground tracking-wide">AEGIS</span>
+          <span className="font-display font-bold text-base text-sidebar-foreground tracking-wide">MEDVERSE</span>
         </div>
 
         {/* Connection */}
@@ -142,7 +142,7 @@ export default function PatientDashboard() {
               My Health
             </h1>
             <p className="text-sm text-muted-foreground mt-0.5">
-              {me?.user?.sub ? `Welcome back, ${me.user.sub}` : "Real-time vitals from your Aegis vest"}
+              {me?.user?.sub ? `Welcome back, ${me.user.sub}` : "Real-time vitals from your MedVerse vest"}
             </p>
           </div>
           <div className={`flex items-center gap-2 border rounded-full px-3 py-1.5 text-xs font-semibold ${
@@ -178,7 +178,7 @@ export default function PatientDashboard() {
               <p className="text-sm text-muted-foreground leading-relaxed">
                 {connected
                   ? "Your vital signs are within the normal range. Heart rate and SpO₂ look healthy. No critical alerts at this time. Continue wearing your vest for continuous monitoring."
-                  : "Your Aegis vest is currently offline. Please ensure the vest is charged and within Bluetooth range to resume real-time monitoring."}
+                  : "Your MedVerse vest is currently offline. Please ensure the vest is charged and within Bluetooth range to resume real-time monitoring."}
               </p>
             </div>
 

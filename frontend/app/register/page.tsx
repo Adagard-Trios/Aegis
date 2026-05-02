@@ -79,7 +79,7 @@ export default function RegisterPage() {
                 Create your account
               </h1>
               <p className="text-xs text-muted-foreground mt-1">
-                Join Aegis — Clinical Intelligence Platform
+                Join MedVerse — Clinical Intelligence Platform
               </p>
             </div>
           </div>
