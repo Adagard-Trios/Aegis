@@ -10,7 +10,7 @@ interface BiometricCardProps {
   value: string;
   unit: string;
   status: "normal" | "warning" | "critical";
-  icon: React.ElementType;
+  icon: React.ComponentType<{ className?: string; color?: string; size?: number }>;
   sparkline?: number[];
   delay?: number;
 }

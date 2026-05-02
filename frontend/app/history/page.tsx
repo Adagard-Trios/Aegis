@@ -22,7 +22,7 @@ interface Panel {
   label: string;
   unit: string;
   color: string;
-  icon: React.ComponentType<{ className?: string }>;
+  icon: React.ComponentType<{ className?: string; color?: string; style?: React.CSSProperties }>;
 }
 
 const PANELS: Panel[] = [

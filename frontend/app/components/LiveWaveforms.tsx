@@ -6,7 +6,7 @@ import { Heart, Wind, Activity, Baby } from "lucide-react";
 
 interface WaveformProps {
   title: string;
-  icon: React.ElementType;
+  icon: React.ComponentType<{ className?: string; color?: string; size?: number; style?: React.CSSProperties }>;
   color: string;
   generator: (t: number) => number;
   yRange: [number, number];

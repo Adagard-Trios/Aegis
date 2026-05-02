@@ -6,7 +6,8 @@ import { Heart, Wind, Baby, Eye, Stethoscope, Brain, Loader2, RefreshCw } from "
 import { fetchInterpretations, runAgentNow, type InterpretationsMap } from "../lib/api";
 import { useActivePatient } from "../hooks/useActivePatient";
 
-const META: Record<string, { icon: React.ElementType; color: string }> = {
+type IconType = React.ComponentType<{ className?: string; color?: string; size?: number }>;
+const META: Record<string, { icon: IconType; color: string }> = {
   Cardiology:        { icon: Heart,       color: "#ef4444" },
   Pulmonary:         { icon: Wind,        color: "#10b981" },
   Neurology:         { icon: Brain,       color: "#8b5cf6" },
@@ -102,8 +103,11 @@ export function ExpertSummaryCards() {
               >
                 <div className="flex items-center justify-between mb-2">
                   <div className="flex items-center gap-2">
-                    <div className="w-8 h-8 rounded-md flex items-center justify-center" style={{ backgroundColor: `${meta.color}15` }}>
-                      <Icon className="w-4 h-4" style={{ color: meta.color }} />
+                    <div
+                      className="w-8 h-8 rounded-md flex items-center justify-center"
+                      style={{ backgroundColor: `${meta.color}15` }}
+                    >
+                      <Icon className="w-4 h-4" color={meta.color} />
                     </div>
                     <div>
                       <h4 className="text-xs font-semibold text-foreground">{spec}</h4>

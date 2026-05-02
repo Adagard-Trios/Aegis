@@ -19,6 +19,8 @@ import {
   FileJson,
   Box,
   ClipboardList,
+  Shield,
+  Wifi,
 } from "lucide-react";
 
 const navItems = [

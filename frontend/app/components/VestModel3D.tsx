@@ -116,6 +116,7 @@ function DataFlowLine({ points, speed = 1, color = "#00d4ff" }: {
 
   return (
     <group>
+      {/* @ts-expect-error R3F <line> intrinsic clashes with SVG namespace under React 19 types */}
       <line geometry={lineGeo}>
         <lineBasicMaterial color={color} transparent opacity={0.08} />
       </line>
@@ -414,6 +415,7 @@ function EdgeTrimLine({ points, color = "#00d4ff", intensity = 0.5 }: {
   }, [points]);
 
   return (
+    /* @ts-expect-error R3F <line> intrinsic clashes with SVG namespace under React 19 types */
     <line geometry={geo}>
       <lineBasicMaterial color={color} transparent opacity={intensity} />
     </line>
