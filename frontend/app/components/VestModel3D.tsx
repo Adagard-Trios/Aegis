@@ -628,7 +628,7 @@ function FuturisticVest() {
    SCENE — dramatic lighting
    ═══════════════════════════════════════════════════ */
 
-function VestScene({ onSensorHover }: { onSensorHover: (label: string | null, temp: number) => void }) {
+export function VestScene({ onSensorHover }: { onSensorHover: (label: string | null, temp: number) => void }) {
   return (
     <>
       {/* Key light — warm white */}
