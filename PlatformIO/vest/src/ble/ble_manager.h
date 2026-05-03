@@ -18,10 +18,14 @@ public:
                 const ECGData          &ecg,
                 const AudioData        &audio,
                 const EnvironmentData  &env);
+  // High-rate ECG burst — drains the manager's ring buffer and emits one
+  // notification on the dedicated ECG characteristic. Call at ECG_BURST_INTERVAL.
+  void transmitECGBurst(ECGManager &ecg);
   bool isConnected() const { return _connected; }
 
 private:
-  NimBLECharacteristic* _pChar = nullptr;
+  NimBLECharacteristic* _pChar    = nullptr;
+  NimBLECharacteristic* _pEcgChar = nullptr;
   bool _connected = false;
   friend class AegisBLECallbacks;
 };

@@ -880,16 +880,20 @@ A common confusion: "just change `delay(25)` to `delayMicroseconds(4000)` in `ma
 #define ENV_READ_INTERVAL    5000  // 0.2 Hz — BMP280 + DHT11
 ```
 
-**ECG is already sampled at 333 Hz** into a 1024-sample ring buffer inside [ECGManager::sample()](PlatformIO/vest/src/ecg/ecg_manager.cpp). The bottleneck is [ECGManager::process()](PlatformIO/vest/src/ecg/ecg_manager.cpp) — it runs every `ECG_PROCESS_INTERVAL` and pulls **one latest sample** into `ecgData.lead1_mv/lead2_mv/lead3_mv`. [BLEManager::transmit()](PlatformIO/vest/src/ble/ble_manager.cpp) then bakes those scalars into each BLE packet. Effective ECG rate delivered to the backend today: **~1 Hz**.
+**ECG is sampled at 333 Hz** into a 1024-sample ring buffer inside [ECGManager::sample()](PlatformIO/vest/src/ecg/ecg_manager.cpp).
 
-Two upgrade paths:
+**Earlier history (firmware ≤ v3.2):** [ECGManager::process()](PlatformIO/vest/src/ecg/ecg_manager.cpp) ran every `ECG_PROCESS_INTERVAL` (1000 ms) and copied **one** sample from the ring buffer into `ecgData.lead1_mv/lead2_mv/lead3_mv`; [BLEManager::transmit()](PlatformIO/vest/src/ble/ble_manager.cpp) baked those scalars into the vitals payload. Effective ECG rate delivered to the backend was **~1 Hz**, even though sampling itself was 333 Hz — the 332 other samples per second were overwritten in the ring buffer and never seen.
 
-| Fix | Edit | Delivered ECG rate | Cost | When to pick it |
-|-----|------|--------------------|------|-----------------|
-| Minimal | `ECG_PROCESS_INTERVAL 1000 → 4` in [config.h](PlatformIO/vest/src/config.h) | ~30–50 Hz (capped by NimBLE notify throughput on ESP32, not by your config) | 1 line | Visual QRS, posture-aware cardiology demo, PR/QT eyeballing |
-| Proper  | Batch N ECG samples per BLE packet (firmware `transmit()` + [app.py](app.py) parser) | True 250 Hz at the backend | ~30-40 firmware + ~15 parser lines | ECGFounder classification, ST-segment analysis, HRV precision |
+**Current path (firmware v3.3+):** raw ECG ships on a **dedicated BLE characteristic** (`beb5483e-…-26a9`) at the firmware sample rate. The vitals characteristic no longer carries `L1`/`L2`/`L3` — only the derived HR + status flags. The flow:
 
-Whichever you pick, the backend side is already ready — `MEDVERSE_SAMPLE_RATE=250` reshapes every ring buffer (`BUFFER_SIZE`, `SPO2_WINDOW`, `BR_WINDOW`) on the next import.
+1. `ECGManager::sample()` writes ADC reads into the 1024-sample ring buffer at 333 Hz and increments `_pendingCount`.
+2. `ECGManager::drainSamples(lead1, lead2, max)` copies up to 16 fresh samples (oldest-first), advances the drain pointer, and returns the count. Pending samples beyond the cap are kept for the next drain — no silent drops unless the ring overflows.
+3. `BLEManager::transmitECGBurst(ecg)` runs every `ECG_BURST_INTERVAL` (33 ms ≈ 30 Hz), drains the manager, and emits a compact ASCII payload `EB1:v0|v1|...,EB2:v0|v1|...` (≤ 256 bytes) on the burst characteristic.
+4. Backend [`handle_ecg_burst()`](app.py) parses the burst, appends each sample to `ecg_l1_data`/`ecg_l2_data`, and computes Lead III (`II - I`) per sample.
+
+Net delivered ECG rate: **~333 Hz** (firmware-side cap; NimBLE notify throughput on ESP32 typically sustains 30+ Hz × 11 samples/burst). The backend deque is sized as `MEDVERSE_ECG_SAMPLE_RATE × 4 s` (default `250 × 4 = 1000` samples) — keep this independent of the vitals `MEDVERSE_SAMPLE_RATE` so PPG and ECG can scale separately.
+
+**Backwards compatibility:** `handle_ble_notification` still parses optional `L1`/`L2`/`L3` from the vitals payload, so vests on pre-v3.3 firmware keep working at 1 Hz until reflashed. Backend's `run_single_client` skips the burst characteristic with a warning when the firmware doesn't expose it.
 
 ### Hardware matrix
 
@@ -1009,7 +1013,7 @@ Pre-existing adapters in [src/ml/](src/ml/) and [src/biometric/](src/biometric/)
 | `/api/history` returns an empty list                    | Stream data for a minute or two so SQLite accumulates rows. On Timescale, check that `CREATE EXTENSION timescaledb` ran and `alembic upgrade head` completed. |
 | History chart flatlines at 1 m resolution               | Not enough rows in the last minute — switch to `1h`. |
 | Sample rate mismatch (backend says 40, firmware on 250) | Read [Firmware sample-rate architecture](#firmware-sample-rate-architecture) first — the edit is in [config.h](PlatformIO/vest/src/config.h), not a `delay(25)` in `main.cpp`. After flashing the new firmware, set `MEDVERSE_SAMPLE_RATE=250` in `.env`. The active rate appears in `GET /api/status` so the frontend can verify sync. |
-| ECG window filled with repeating values                 | `ECG_PROCESS_INTERVAL` in firmware still at `1000` — the backend is receiving one fresh ECG scalar per second. Lower the interval (see [Firmware sample-rate architecture](#firmware-sample-rate-architecture)) or adopt the batched-payload path. |
+| ECG window filled with repeating values                 | Vest is on pre-v3.3 firmware (still emitting `L1`/`L2`/`L3` scalars in the vitals payload, no burst characteristic). Reflash with the current firmware — the burst path delivers true 333 Hz on `beb5483e-…-26a9`. Backend warns `Optional char ... unavailable` when the burst char isn't exposed. |
 | Flutter `invalid credentials` on login                  | Backend auth is off by default — any creds should succeed. If it still fails, confirm `ApiConfig.baseUrl` resolves (Android emulator auto-maps `localhost` → `10.0.2.2`). |
 | Mobile login screen stays visible after valid login     | `AuthService.load()` may have thrown — check debug console. `flutter_secure_storage` needs MainActivity to use `FlutterFragmentActivity` on Android API < 23. |
 | FHIR endpoints return dicts, not validated resources    | `pip install fhir.resources>=7.0.0` — the module falls back to raw dicts when it's absent. |
@@ -1056,12 +1060,11 @@ MedVerse ships **security-capable but not security-mandatory** — auth is off b
 - ✅ **Parallax marketing landing page** at `/` — Lenis smooth-scroll, Framer Motion `useScroll` parallax, sticky-blur top nav, 12-specialist grid, vest deep-dive, animated telemetry tickers.
 - ✅ **Procedural 3D vest** — fully built from Three.js primitives + procedural fabric/webbing `DataTexture` normal maps (no .glb assets); realistic stitching, centre zipper, flat webbing straps, 4 sensor styles (ECG electrode / PPG / DS18B20 / I²S mic), control module with vents + USB-C cutout.
 - ✅ Patient identity, alerts, care plans, audit log, FHIR export, handoff, doctor/patient dashboard split, register flow.
+- ✅ **ECG burst characteristic (firmware v3.3)** — dedicated BLE char `beb5483e-…-26a9` carries raw 333 Hz ECG via `EB1:`/`EB2:` compact ASCII batches; backend `handle_ecg_burst` appends per-sample and computes Lead III. Replaces the 1 Hz scalar path. Backwards-compatible — old firmware still works at 1 Hz via `L1`/`L2`/`L3` in vitals payload.
 
 ### User's to-do (not something I can do)
 
-- **Firmware — ECG rate upgrade** (see [Firmware sample-rate architecture](#firmware-sample-rate-architecture) for the full picture):
-  - **Minimal fix**: in [PlatformIO/vest/src/config.h](PlatformIO/vest/src/config.h) change `ECG_PROCESS_INTERVAL` from `1000` to `4` (publishes the latest ECG sample at 250 Hz instead of 1 Hz), re-flash, then set `MEDVERSE_SAMPLE_RATE=250`. Note: NimBLE notify throughput still caps the *delivered* rate around 30–50 Hz.
-  - **Proper fix**: batch 25 ECG samples per BLE packet in [ble_manager.cpp](PlatformIO/vest/src/ble/ble_manager.cpp) + extend the backend parser in [app.py](app.py) to expand the array. This is needed for ECGFounder-grade analysis — say the word and I'll implement both sides.
+- **Reflash the vest** with current firmware to get the 333 Hz ECG burst path (`pio run -t upload` from [PlatformIO/vest/](PlatformIO/vest/)). Until reflashed, the vest stays on the 1 Hz scalar path and the backend logs `Optional char ... unavailable`.
 - **Model training**: populate `models/ecg/ecgfounder/weights.pt`, `models/pulmonary/icbhi_cnn/weights.pt`, `models/ecg/biometric_siamese/weights.pt`.
 - **Secrets**: rotate the committed `gsk_…` Groq keys and scrub Git history.
 - **Clinical depth**: have a cardiologist / OB-GYN review [src/knowledge/*.md](src/knowledge/).

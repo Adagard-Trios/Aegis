@@ -32,9 +32,12 @@
 #define I2S_SD_PIN  48
 
 // ── BLE ───────────────────────────────────────────────────────
-#define BLE_DEVICE_NAME     "Aegis_SpO2_Live"
-#define SERVICE_UUID        "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
-#define CHARACTERISTIC_UUID "beb5483e-36e1-4688-b7f5-ea07361b26a8"
+#define BLE_DEVICE_NAME           "Aegis_SpO2_Live"
+#define SERVICE_UUID              "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
+#define CHARACTERISTIC_UUID       "beb5483e-36e1-4688-b7f5-ea07361b26a8"
+// High-rate ECG burst stream — separate characteristic so the vitals payload
+// stays under MTU. Carries N raw ECG samples per notification.
+#define ECG_BURST_CHARACTERISTIC_UUID "beb5483e-36e1-4688-b7f5-ea07361b26a9"
 
 // ── MAX30102 settings ─────────────────────────────────────────
 #define SENSOR_BRIGHTNESS   255
@@ -49,8 +52,10 @@
 // ── Duty cycle timing (ms) ────────────────────────────────────
 #define PPG_READ_INTERVAL    25
 #define IMU_READ_INTERVAL    50
-#define ECG_SAMPLE_INTERVAL  3
-#define ECG_PROCESS_INTERVAL 1000
+#define ECG_SAMPLE_INTERVAL  3       // 333 Hz raw sampling into the ring buffer
+#define ECG_PROCESS_INTERVAL 200     // 5 Hz HR/QRS-flag refresh (was 1000)
+#define ECG_BURST_INTERVAL   33      // ~30 Hz BLE notify → 11 samples/burst at 333 Hz
+#define ECG_BURST_MAX        16      // hard cap on samples per burst packet
 #define AUDIO_INTERVAL       1000
 #define TEMP_READ_INTERVAL   5000
 #define ENV_READ_INTERVAL    5000

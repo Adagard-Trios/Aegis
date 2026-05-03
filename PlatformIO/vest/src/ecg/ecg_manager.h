@@ -17,14 +17,22 @@ public:
   ECGManager();
   void begin();
   void sample();                  // Call at ~333Hz in loop
-  void process(ECGData &data);    // Call every second
+  void process(ECGData &data);    // Call every ECG_PROCESS_INTERVAL
+
+  // Copy up to `max` fresh samples (mV-converted) out of the ring buffer
+  // into `lead1_mv` / `lead2_mv`. Returns the number actually written.
+  // Any pending samples beyond `max` are kept for the next drain call —
+  // we never silently drop ECG data unless the ring buffer overflows.
+  int  drainSamples(float* lead1_mv, float* lead2_mv, int max);
+
+  static const int BUF = 1024;   // ~3 seconds at 333Hz
 
 private:
-  static const int BUF = 1024;   // ~3 seconds at 333Hz
   float  _buf1[BUF];
   float  _buf2[BUF];
-  int    _idx   = 0;
-  int    _count = 0;
+  int    _idx          = 0;
+  int    _count        = 0;
+  int    _pendingCount = 0;      // samples written since last drainSamples()
 
   unsigned long _startTime   = 0;
   unsigned long _lastBeat    = 0;

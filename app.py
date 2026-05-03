@@ -70,16 +70,25 @@ from src.alerts.rules import evaluate as evaluate_alerts
 VEST_DEVICE_NAME = "Aegis_SpO2_Live"
 FETAL_DEVICE_NAME = "AbdomenMonitor"
 VEST_CHAR_UUID = "beb5483e-36e1-4688-b7f5-ea07361b26a8"
+# Dedicated ECG burst characteristic — added in firmware v3.3 to deliver
+# true 333 Hz raw ECG (firmware sample rate). The vitals char no longer
+# carries L1/L2/L3 scalars; the burst handler appends per-sample.
+VEST_ECG_BURST_CHAR_UUID = "beb5483e-36e1-4688-b7f5-ea07361b26a9"
 FETAL_CHAR_UUID = "12345678-1234-1234-1234-123456789ab1"
 
-# Sample rate matches the vest firmware's BLE tx cadence. Flash the vest
-# with `delayMicroseconds(4000)` to run at 250 Hz, then set
-# MEDVERSE_SAMPLE_RATE=250 in .env — buffer windows auto-derive below.
+# Sample rate matches the vest firmware's BLE tx cadence for PPG/IMU/etc.
+# (~40 Hz). ECG runs on its own characteristic and arrives at MEDVERSE_ECG_SAMPLE_RATE
+# (default 250 Hz, real firmware ceiling ~333 Hz).
 import os as _os_sr
 SAMPLE_RATE = int(_os_sr.environ.get("MEDVERSE_SAMPLE_RATE", "40"))
 BUFFER_SIZE = SAMPLE_RATE * 20   # ~20 s rolling window
 SPO2_WINDOW = SAMPLE_RATE * 4    #  4 s for SpO2 ratio
 BR_WINDOW = SAMPLE_RATE * 10     # 10 s for breathing-rate
+
+# ECG runs on its own clock — keep the deque short enough for SSE bandwidth
+# (4 s × 250 Hz = 1000 samples is plenty for QRS/HRV/ST analysis windows).
+ECG_SAMPLE_RATE = int(_os_sr.environ.get("MEDVERSE_ECG_SAMPLE_RATE", "250"))
+ECG_BUFFER_SIZE = ECG_SAMPLE_RATE * 4
 
 SIMULATION_MODE_GLOBAL = "Live"
 
@@ -128,10 +137,11 @@ env_et_data = deque([0.0] * BUFFER_SIZE, maxlen=BUFFER_SIZE)  # HW-611 BMP280 Te
 env_hum_data = deque([0.0] * BUFFER_SIZE, maxlen=BUFFER_SIZE) # DHT11 Humidity
 env_dt_data = deque([0.0] * BUFFER_SIZE, maxlen=BUFFER_SIZE)  # DHT11 Temp
 
-# ECG
-ecg_l1_data = deque([0.0] * BUFFER_SIZE, maxlen=BUFFER_SIZE)
-ecg_l2_data = deque([0.0] * BUFFER_SIZE, maxlen=BUFFER_SIZE)
-ecg_l3_data = deque([0.0] * BUFFER_SIZE, maxlen=BUFFER_SIZE)
+# ECG — sized off ECG_BUFFER_SIZE (4 s × ECG_SAMPLE_RATE) since the burst
+# characteristic delivers raw samples at 250-333 Hz, not the vitals 40 Hz.
+ecg_l1_data = deque([0.0] * ECG_BUFFER_SIZE, maxlen=ECG_BUFFER_SIZE)
+ecg_l2_data = deque([0.0] * ECG_BUFFER_SIZE, maxlen=ECG_BUFFER_SIZE)
+ecg_l3_data = deque([0.0] * ECG_BUFFER_SIZE, maxlen=ECG_BUFFER_SIZE)
 ecg_hr_data = deque([0.0] * BUFFER_SIZE, maxlen=BUFFER_SIZE)
 
 # Audio
@@ -334,9 +344,12 @@ def handle_ble_notification(sender, data):
         et = float(parts.get('ET', 0))
         hum = float(parts.get('HUM', 0))
         dt = float(parts.get('DT', 0))
-        ecg_l1 = float(parts.get('L1', 0))
-        ecg_l2 = float(parts.get('L2', 0))
-        ecg_l3 = float(parts.get('L3', 0))
+        # L1/L2/L3 are no longer in the vitals payload — they arrive on the
+        # ECG burst characteristic (handle_ecg_burst). Kept here as graceful
+        # fallback for vests still running pre-v3.3 firmware.
+        ecg_l1 = float(parts.get('L1', 0)) if 'L1' in parts else None
+        ecg_l2 = float(parts.get('L2', 0)) if 'L2' in parts else None
+        ecg_l3 = float(parts.get('L3', 0)) if 'L3' in parts else None
         ecg_hr = float(parts.get('EHR', 0))
         audio_a = float(parts.get('ARMS', 0))
         audio_d = float(parts.get('DRMS', 0))
@@ -367,9 +380,14 @@ def handle_ble_notification(sender, data):
             env_et_data.append(et)
             env_hum_data.append(hum)
             env_dt_data.append(dt)
-            ecg_l1_data.append(ecg_l1)
-            ecg_l2_data.append(ecg_l2)
-            ecg_l3_data.append(ecg_l3)
+            # ECG samples now arrive at 333 Hz on the burst char. Only fall
+            # back to scalar appending when we're talking to old firmware.
+            if ecg_l1 is not None:
+                ecg_l1_data.append(ecg_l1)
+            if ecg_l2 is not None:
+                ecg_l2_data.append(ecg_l2)
+            if ecg_l3 is not None:
+                ecg_l3_data.append(ecg_l3)
             ecg_hr_data.append(ecg_hr)
             audio_a_data.append(audio_a)
             audio_d_data.append(audio_d)
@@ -390,12 +408,46 @@ def handle_ble_notification(sender, data):
         print(f"Parse error: {e}")
 
 
-async def run_single_client(device_name: str, char_uuid: str, handler_func, set_connected_flag_func):
+def handle_ecg_burst(sender, data):
+    """Drains the high-rate ECG characteristic and appends per-sample to the
+    L1/L2/L3 deques. Payload format:  EB1:v0|v1|...,EB2:v0|v1|...
+    where each v is an integer millivolt reading. Lead III is computed
+    Einthoven-style (II - I) per sample so all three deques stay aligned."""
+    try:
+        decoded = data.decode('utf-8').strip()
+        l1_samples = []
+        l2_samples = []
+        for part in decoded.split(','):
+            if part.startswith('EB1:'):
+                l1_samples = [float(v) for v in part[4:].split('|') if v]
+            elif part.startswith('EB2:'):
+                l2_samples = [float(v) for v in part[4:].split('|') if v]
+        n = min(len(l1_samples), len(l2_samples))
+        if n == 0:
+            return
+        with data_lock:
+            for i in range(n):
+                ecg_l1_data.append(l1_samples[i])
+                ecg_l2_data.append(l2_samples[i])
+                ecg_l3_data.append(l2_samples[i] - l1_samples[i])
+    except Exception as e:
+        print(f"ECG burst parse error: {e}")
+
+
+async def run_single_client(device_name: str, char_handlers, set_connected_flag_func):
+    """Connects to one BLE device and subscribes to one or more characteristics
+    on a single shared connection.
+
+    char_handlers: list of (char_uuid, handler_func) tuples. The first entry's
+    UUID is treated as the device's required characteristic — if it can't be
+    subscribed we abort. Optional characteristics (e.g. ECG burst on old
+    firmware) log a warning and continue.
+    """
     try:
         from bleak import BleakClient, BleakScanner
     except ImportError:
         return False
-        
+
     print(f"Scanning for '{device_name}'...")
     device = await BleakScanner.find_device_by_name(device_name, timeout=10.0)
     if not device:
@@ -408,7 +460,13 @@ async def run_single_client(device_name: str, char_uuid: str, handler_func, set_
             if client.is_connected:
                 set_connected_flag_func(True)
                 print(f"[{device_name}] Connected! Streaming...")
-                await client.start_notify(char_uuid, handler_func)
+                for idx, (char_uuid, handler) in enumerate(char_handlers):
+                    try:
+                        await client.start_notify(char_uuid, handler)
+                    except Exception as e:
+                        if idx == 0:
+                            raise  # primary characteristic is required
+                        print(f"[{device_name}] Optional char {char_uuid} unavailable ({e}) — continuing")
                 while client.is_connected:
                     await asyncio.sleep(1)
     except Exception as e:
@@ -432,8 +490,19 @@ async def run_dual_clients():
         print("[WARN] bleak not installed — using mock data")
         return False
 
-    task1 = run_single_client(VEST_DEVICE_NAME, VEST_CHAR_UUID, handle_ble_notification, set_vest_connected)
-    task2 = run_single_client(FETAL_DEVICE_NAME, FETAL_CHAR_UUID, handle_fetal_notification, set_fetal_connected)
+    task1 = run_single_client(
+        VEST_DEVICE_NAME,
+        [
+            (VEST_CHAR_UUID, handle_ble_notification),
+            (VEST_ECG_BURST_CHAR_UUID, handle_ecg_burst),
+        ],
+        set_vest_connected,
+    )
+    task2 = run_single_client(
+        FETAL_DEVICE_NAME,
+        [(FETAL_CHAR_UUID, handle_fetal_notification)],
+        set_fetal_connected,
+    )
     
     results = await asyncio.gather(task1, task2, return_exceptions=True)
     # If both return False/Exception (i.e., not found), we fallback to mock

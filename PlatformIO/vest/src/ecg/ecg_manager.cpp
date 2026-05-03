@@ -21,6 +21,22 @@ void ECGManager::sample() {
   _buf2[_idx] = (float)analogRead(ECG2_PIN);
   _idx = (_idx + 1) % BUF;
   if (_count < BUF) _count++;
+  // Cap pending at BUF — if drains fall behind that long, we lose oldest samples
+  if (_pendingCount < BUF) _pendingCount++;
+}
+
+int ECGManager::drainSamples(float* lead1_mv, float* lead2_mv, int max) {
+  if (_pendingCount <= 0 || max <= 0) return 0;
+  int count = (_pendingCount < max) ? _pendingCount : max;
+  // The oldest pending sample sits `_pendingCount` slots behind the next-write index
+  int startBack = _pendingCount;
+  for (int i = 0; i < count; i++) {
+    int srcIdx = (_idx - startBack + i + BUF) % BUF;
+    lead1_mv[i] = (_buf1[srcIdx] / 4095.0f) * 3300.0f;
+    lead2_mv[i] = (_buf2[srcIdx] / 4095.0f) * 3300.0f;
+  }
+  _pendingCount -= count;
+  return count;
 }
 
 void ECGManager::process(ECGData &data) {

@@ -34,6 +34,12 @@ void BLEManager::begin() {
     CHARACTERISTIC_UUID,
     NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY
   );
+  // Dedicated high-rate ECG burst characteristic on the same service so the
+  // backend can subscribe with one BleakClient connection.
+  _pEcgChar = pService->createCharacteristic(
+    ECG_BURST_CHARACTERISTIC_UUID,
+    NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY
+  );
   pService->start();
   NimBLEAdvertising* pAdv = NimBLEDevice::getAdvertising();
   pAdv->addServiceUUID(SERVICE_UUID);
@@ -61,7 +67,9 @@ void BLEManager::transmit(const SensorData       &ppg,
     "SA:%.1f,LB:%.1f,PP:%d,LA:%d,"
     "BPR:%.1f,BTP:%.1f,"
     "EP:%.1f,ET:%.1f,HUM:%.1f,DT:%.1f,"
-    "L1:%.0f,L2:%.0f,L3:%.0f,EHR:%.1f,EW:%d,EV:%d,"
+    // L1/L2/L3 raw samples are emitted on the ECG burst characteristic at
+    // ~333 Hz; here we keep only the derived HR + status flags.
+    "EHR:%.1f,EW:%d,EV:%d,"
     "ARMS:%.0f,DRMS:%.0f,SD:%d",
     ppg.ir1, ppg.red1, ppg.ir2, ppg.red2, ppg.ira, ppg.reda,
     ppg.temp1, ppg.temp2,
@@ -78,7 +86,6 @@ void BLEManager::transmit(const SensorData       &ppg,
     posture.pressure_hPa, posture.bmpTempC,
     env.bmp280PressHpa, env.bmp280TempC,
     env.dht11Humidity,  env.dht11TempC,
-    ecg.lead1_mv, ecg.lead2_mv, ecg.lead3_mv,
     ecg.heartRate,
     ecg.warmingUp ? 1 : 0, ecg.valid ? 1 : 0,
     audio.analogRMS, audio.digitalRMS,
@@ -86,4 +93,32 @@ void BLEManager::transmit(const SensorData       &ppg,
 
   _pChar->setValue((uint8_t*)payload, strlen(payload));
   _pChar->notify();
+}
+
+void BLEManager::transmitECGBurst(ECGManager &ecg) {
+  if (!_connected || _pEcgChar == nullptr) return;
+
+  float lead1[ECG_BURST_MAX];
+  float lead2[ECG_BURST_MAX];
+  int n = ecg.drainSamples(lead1, lead2, ECG_BURST_MAX);
+  if (n <= 0) return;
+
+  // Compact ASCII payload: "EB1:1234|2345|...,EB2:1234|2345|..."
+  // 16 samples × max 5 chars + delimiters fits comfortably under MTU.
+  char payload[256];
+  int  off = snprintf(payload, sizeof(payload), "EB1:");
+  for (int i = 0; i < n; i++) {
+    off += snprintf(payload + off, sizeof(payload) - off,
+                    "%d%s", (int)lead1[i], (i < n - 1) ? "|" : "");
+    if (off >= (int)sizeof(payload) - 8) break;  // safety margin for trailing fields
+  }
+  off += snprintf(payload + off, sizeof(payload) - off, ",EB2:");
+  for (int i = 0; i < n; i++) {
+    off += snprintf(payload + off, sizeof(payload) - off,
+                    "%d%s", (int)lead2[i], (i < n - 1) ? "|" : "");
+    if (off >= (int)sizeof(payload) - 1) break;
+  }
+
+  _pEcgChar->setValue((uint8_t*)payload, strlen(payload));
+  _pEcgChar->notify();
 }

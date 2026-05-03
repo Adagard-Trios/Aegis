@@ -28,6 +28,7 @@ unsigned long lastIMURead    = 0;
 unsigned long lastTempRead   = 0;
 unsigned long lastECGSample  = 0;
 unsigned long lastECGProcess = 0;
+unsigned long lastECGBurst   = 0;
 unsigned long lastAudioRead  = 0;
 unsigned long lastEnvRead    = 0;
 unsigned long ppgActiveStart = 0;
@@ -112,6 +113,13 @@ void loop() {
   }
 
   ble.transmit(ppgData, postureData, tempData, ecgData, audioData, envData);
+
+  // Drain the ECG ring buffer at ~30 Hz on its own characteristic — this is
+  // what gives the backend true 333 Hz instead of the 1 Hz scalar in vitals.
+  if (now - lastECGBurst >= ECG_BURST_INTERVAL) {
+    ble.transmitECGBurst(ecg);
+    lastECGBurst = now;
+  }
 
   Serial.printf(
     "[DATA] PPG:%s IR:%lu | "
