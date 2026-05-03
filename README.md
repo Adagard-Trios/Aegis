@@ -146,6 +146,8 @@ The orchestration flow is documented as two PNGs under [assets/](assets/):
 medverse/
 ├── app.py                    # FastAPI backend — BLE, SSE, REST, DSP, PK/PD, OCR
 ├── main.py                   # Minimal aux entry
+├── train_all.py              # Runner — invokes every models/<slug>/main.py with per-pipeline timeouts + result JSON
+├── pipeline_utils.py         # Shared dataset-loader helpers (PhysioNet, Kaggle, HF, Synapse) + DatasetUnavailable
 ├── start.sh                  # One-command demo (boots backend + frontend)
 ├── DEMO.md                   # 5-minute demo walkthrough + endpoint reference
 ├── LICENSE                   # MIT
@@ -154,8 +156,9 @@ medverse/
 ├── requirements.txt          # pip-compatible dep list
 ├── uv.lock                   # uv resolver lockfile
 ├── .python-version           # 3.13
-├── .env                      # Groq API keys (see SECURITY notice)
+├── .env                      # Groq + ML pipeline credentials (see SECURITY notice)
 ├── aegis_local.db            # SQLite telemetry + interpretations (~100 MB, gitignored)
+├── train_all_results.json    # Per-pipeline status (ok/gated/timeout/fail), written by train_all.py
 ├── chroma_data/              # Chroma vector store, one collection per specialty
 ├── .langgraph_api/           # LangGraph CLI checkpoint pickles
 ├── assets/                   # Workflow diagram PNGs
@@ -344,7 +347,22 @@ All variables are loaded from [.env](.env) via `python-dotenv`. A complete, safe
 | `FL_PATIENT_ID`   | `default_patient`| Client's patient id           |
 | `FL_ROUNDS`       | `10`            | Number of aggregation rounds   |
 
-The frontend has **no** `.env`; its backend URL is hard-coded to `http://localhost:8000`.
+### ML pipeline data-loading credentials
+
+Loaded by [pipeline_utils.py](pipeline_utils.py) via `python-dotenv` from the same root [.env](.env). Each pipeline's `_load_dataframe` raises `DatasetUnavailable` with a precise hint when a required credential is missing — pipelines that don't need a credential download their data on first run automatically.
+
+| Variable                | Default | Purpose |
+|-------------------------|---------|---------|
+| `KAGGLE_USERNAME`       | *(unset)* | Kaggle API username — required for `skin_disease`, `retinal_disease`, `retinal_age` (HAM10000 / ODIR-5K) and the ICBHI mirror fallback for `lung_sound`. Get from https://www.kaggle.com/settings/account → "Create New API Token". |
+| `KAGGLE_KEY`            | *(unset)* | Kaggle API key (paired with `KAGGLE_USERNAME`). |
+| `HF_TOKEN`              | *(unset)* | HuggingFace token — required for `retinal_age` (RETFound MAE weights via `hf_hub_download`). Read scope is enough. |
+| `SYNAPSE_AUTH_TOKEN`    | *(unset)* | Synapse access token — required for `parkinson_screener`'s WearGait-PD gait signals. Without it, the pipeline still runs on UCI Parkinsons voice features only. |
+| `MEDVERSE_FETCH_LARGE`  | `false` | Opt-in switch for large datasets. When `false`, pipelines that depend on PTB-XL (25 GB), PTB diagnostic ECG (7 GB), CTU-UHB CTG waveforms (500 MB), or ISIC 2024 (~25 GB) raise `DatasetUnavailable` instead of silently downloading. Set to `true` when you actually want the full datasets. |
+| `WESAD_ROOT`            | *(unset)* | Optional path to a manually-downloaded WESAD dataset (real WESAD requires email registration at uni-siegen.de). When unset, `stress_ans` falls back to the synthetic generator from the source notebook. |
+
+### Frontend env
+
+Frontend env lives in [frontend/.env.example](frontend/.env.example) — copy to `frontend/.env.local` if you need to point the dashboard at a different backend. The single variable is `NEXT_PUBLIC_API_URL` (defaults to `http://localhost:8000`).
 
 ## HTTP / SSE API reference
 
@@ -776,7 +794,7 @@ The resulting status drives the clearance constant above (`Poor Metabolizer` →
 
 ## Web dashboard (frontend/)
 
-**Stack** — Next.js 16.1.7 (App Router, client components), React 19.2.3, TypeScript 5, Tailwind CSS 4, Framer Motion 12, lucide-react, react-markdown 10, Three.js 0.183 with `@react-three/fiber` 9 and `@react-three/drei` 10.
+**Stack** — Next.js 16.1.7 (App Router, client components, Turbopack builds), React 19.2.3, TypeScript 5, Tailwind CSS 4, Framer Motion 12, **Lenis** smooth-scroll for the parallax landing page, lucide-react, react-markdown 10, Recharts, Three.js 0.183 with `@react-three/fiber` 9 and `@react-three/drei` 10.
 
 **Scripts** ([frontend/package.json](frontend/package.json)):
 
@@ -789,23 +807,35 @@ npm run lint    # eslint
 
 **Routes** (under [frontend/app/](frontend/app/)):
 
-| Route             | Purpose |
-|-------------------|---------|
-| `/`               | Main dashboard — digital twin, biometric grid, waveforms, expert summaries, simulation controls |
-| `/cardiology`     | Dual-ECG leads I/II/III, PPG, HR, HRV, QRS, PR, cuffless BP, arrhythmia/ST-segment flags |
-| `/obstetrics`     | FHR + CTG, contractions, kicks, maternal HR/temp, Dawes-Redman |
-| `/respiratory`    | Pneumogram, lung-sound I²S stream, RR, SpO₂, tidal volume, COPD/apnea/hypoxia flags |
-| `/neurology`      | Dual-IMU posture, gait symmetry, tremor, fall risk, autonomic HRV LF/HF |
-| `/digital-twin`   | Full-screen 3D anatomical model + telemetry HUD + **PK/PD Simulator** panel (drug picker, dose slider, CYP2D6 toggle, live Bateman effect-curve chart) |
-| `/diagnostics`    | Multi-agent cross-evaluation with per-agent confidence |
-| `/environment`    | BMP280 + DHT11 ambient telemetry; DS18B20 × 3 skin-temp strip |
-| `/settings`       | BLE device info, backend URL, stream rate, alert thresholds, system info |
-| `/history`        | Resolution toggle (1m/1h) and 4-panel recharts grid (HR, SpO₂, RR, HRV) backed by `/api/history` |
-| `/vest-viewer`    | 3D vest mesh inside `DashboardLayout` with a live sensor sidebar driven by `useVestStream`, scenario indicator, BLE status pill |
+| Route                | Purpose |
+|----------------------|---------|
+| `/`                  | **Marketing landing page** — parallax sections (Hero with 3D vest, live telemetry showcase, 12 specialists grid, vest deep-dive, CTA footer) driven by Framer Motion + Lenis smooth scroll |
+| `/login`             | JWT login form + dev-credential hint |
+| `/register`          | New-patient self-registration form |
+| `/dashboard/patient` | Patient-facing dashboard — biometric grid, waveforms, expert summaries, scenario picker |
+| `/dashboard/doctor`  | Clinician-facing dashboard — patient roster shortcuts + multi-patient triage view |
+| `/patients`          | Patient roster table with search + active-patient switcher |
+| `/patients/[id]`     | Per-patient detail view — vitals, history, interpretations |
+| `/cardiology`        | Dual-ECG leads I/II/III, PPG, HR, HRV, QRS, PR, cuffless BP, arrhythmia/ST-segment flags |
+| `/obstetrics`        | FHR + CTG, contractions, kicks, maternal HR/temp, Dawes-Redman |
+| `/respiratory`       | Pneumogram, lung-sound I²S stream, RR, SpO₂, tidal volume, COPD/apnea/hypoxia flags |
+| `/neurology`         | Dual-IMU posture, gait symmetry, tremor, fall risk, autonomic HRV LF/HF |
+| `/digital-twin`      | Full-screen 3D anatomical model + telemetry HUD + **PK/PD Simulator** panel (drug picker, dose slider, CYP2D6 toggle, live Bateman effect-curve chart) |
+| `/diagnostics`       | Multi-agent cross-evaluation with per-agent confidence |
+| `/environment`       | BMP280 + DHT11 ambient telemetry; DS18B20 × 3 skin-temp strip |
+| `/alerts`            | Alert inbox + acknowledgement UI for triggered thresholds |
+| `/handoff`           | Shift-handoff summary page — synthesised patient brief for the incoming clinician |
+| `/admin/audit`       | Audit-log viewer (auth events, data access, scenario changes) |
+| `/fhir-export`       | One-click FHIR R4 `Bundle` export — preview + download |
+| `/settings`          | BLE device info, backend URL, stream rate, alert thresholds, system info |
+| `/history`           | Resolution toggle (1m/1h) and 4-panel recharts grid (HR, SpO₂, RR, HRV) backed by `/api/history` |
+| `/vest-viewer`       | Procedural 3D vest mesh inside `DashboardLayout` with a live sensor sidebar driven by `useVestStream`, scenario indicator, BLE status pill |
 
 **Streaming hook** — [frontend/app/hooks/](frontend/app/hooks/) exposes `useVestStream()`, which opens an `EventSource` against `http://localhost:8000/stream`, parses the JSON payload, and auto-reconnects after 3 s on disconnect. State is managed with plain React hooks — no Redux / Zustand / Context provider.
 
-**Digital twin** — a GLTF human skeleton coloured by core temperature, animated by live HR, and annotated with uterine-contraction/fetal-kick overlays; supports Live vs. projected scrubbing via the simulation endpoint.
+**3D vest model** — [frontend/app/components/VestModel3D.tsx](frontend/app/components/VestModel3D.tsx). **Fully procedural — no .glb assets.** Built entirely from Three.js primitives + custom `BufferGeometry` (curved torso panels with neck cutout, side cummerbund extrudes, shoulder yoke ribbons), with realism details added through procedural `DataTexture` normal/roughness maps for woven fabric, dashed stitching tubes around every panel seam, a real centre zipper (tape + alternating teeth + slider + pull tab), flat webbing straps (tangent-aligned ribbon geometry, not tubes), and four sensor styles — medical ECG electrodes (silver hydrogel + snap stud), PPG sensors (black housing + 660 nm LED), DS18B20 temp pucks coloured by live skin temp, and perforated I²S mic grilles. Hover any sensor to surface a tooltip with its live channel + temperature. Two exports: `VestScene` (drop-in 3D content for any parent `<Canvas>`) and `VestModel3D` (self-contained with own Canvas + DOM overlays — used on `/vest-viewer`).
+
+**Marketing landing page** — [frontend/app/page.tsx](frontend/app/page.tsx). Parallax scroll experience driven by [SmoothScroll.tsx](frontend/app/components/SmoothScroll.tsx) (Lenis singleton, custom ease-out, lerp 0.1) and Framer Motion's `useScroll` / `useTransform` / `whileInView`. Sections: sticky-blur top nav, hero with the procedural 3D vest in [HeroCanvas.tsx](frontend/app/components/HeroCanvas.tsx), live telemetry showcase with Framer-Motion-animated tickers, 12-specialist grid, vest deep-dive in [VestSectionCanvas.tsx](frontend/app/components/VestSectionCanvas.tsx), and a CTA footer.
 
 **PK/PD Simulator** — [frontend/app/components/PharmacologyPanel.tsx](frontend/app/components/PharmacologyPanel.tsx). Mounted on `/digital-twin`. Drug picker (labetalol / oxytocin), dose slider 0–100 mg, CYP2D6 metabolizer toggle, and a 60-second `recharts` line of `pharmacology.effect_curve` (Bateman). Posts to `/api/simulation/medicate` and `/api/simulation/cyp2d6`; consumes the live SSE stream for the chart and the modulated vital-readout strip.
 
@@ -870,17 +900,88 @@ Whichever you pick, the backend side is already ready — `MEDVERSE_SAMPLE_RATE=
 
 ## ML pipelines (models/)
 
-Training-time artefacts live under [models/](models/) — data schema, notebooks, and the eventual weight files consumed by the runtime adapters in [src/ml/](src/ml/) and [src/biometric/](src/biometric/):
+[models/](models/) is reorganised as **12 self-contained pipelines** — one per source experiment notebook. Each pipeline owns its data ingestion, validation, transformation, and trainer; the canonical structure is documented in [models/README.md](models/README.md) and discoverable programmatically via [models/registry.py](models/registry.py).
 
-| Path                               | Consumed by                                                              | Purpose |
-|------------------------------------|---------------------------------------------------------------------------|---------|
-| `models/ecg/ecgfounder/`           | [`ECGFounderAdapter`](src/ml/ecgfounder_adapter.py)                      | Multi-label cardiac diagnosis (150 labels, AUROC >0.95 on 80) |
-| `models/ecg/biometric_siamese/`    | [`ECGBiometric`](src/biometric/ecg_biometric.py)                         | Personalised ECG identity |
-| `models/pulmonary/icbhi_cnn/`      | [`RespiratorySoundClassifier`](src/ml/pulmonary_classifier.py)           | 4-class respiratory sound (normal / wheeze / crackle / stridor) |
-| `models/fetal/`                    | (future) fetal heart-rate extraction                                     | Reserved |
-| `models/skin/`                     | (future) dermatology classifier                                          | Reserved |
+```
+models/
+├── README.md              # canonical structure + per-pipeline index
+├── registry.py            # PIPELINES registry (slug, family, modality, paths)
+├── _template/             # reference implementation for new pipelines
+└── <slug>/
+    ├── main.py            # entry point — runs ingestion → validation → transform → train
+    ├── data_schema/schema.yaml   # expected columns + target (drives validation)
+    ├── notebooks/source.ipynb    # original experiment notebook
+    └── src/
+        ├── components/{data_ingestion,data_validation,data_transformation,model_trainer}.py
+        ├── entity/{config_entity,artifact_entity}.py
+        ├── pipeline/training_pipeline.py
+        ├── exception/exception.py    # MedVerseException wrapper
+        ├── logging/logger.py
+        └── utils/main_utils/utils.py
+```
 
-Until weight files land, the runtime adapters report `is_loaded = False` and the graphs fall back to LLM-only assessment. See each adapter's docstring for the expected architecture + input shape.
+### Pipeline registry
+
+| Pipeline            | Family       | Dataset          | Source                                | Auth required          | Auto-downloads |
+|---------------------|--------------|------------------|---------------------------------------|------------------------|----------------|
+| `ecg_biometric`     | metric-learn | ECG-ID (~100 MB) | PhysioNet `ecgiddb/1.0.0`             | none                   | ✅ on first run |
+| `parkinson_screener`| classify     | UCI Parkinsons + WearGait-PD | UCI HTTP + Synapse `syn52540892` | `SYNAPSE_AUTH_TOKEN` (gait only) | Voice features ✅; gait skipped without token |
+| `fetal_health`      | classify     | UCI CTG (+ CTU-UHB) | UCI XLS + PhysioNet `ctu-uhb-ctgdb` | none (CTU behind `MEDVERSE_FETCH_LARGE`) | UCI ✅; CTU gated |
+| `preterm_labour`    | classify     | TPEHGDB + TPEHGT (~500 MB) | PhysioNet                       | none                   | ✅ on first run |
+| `lung_sound`        | classify     | ICBHI 2017 (~600 MB) | direct ZIP mirror (Kaggle fallback) | none (Kaggle optional)| ✅ on first run |
+| `bowel_motility`    | classify     | synthetic        | local generator from notebook         | none                   | ✅ always synthetic |
+| `stress_ans`        | classify     | synthetic / WESAD | local generator (or `WESAD_ROOT`)    | email reg for real WESAD | ✅ synthetic by default |
+| `ecg_arrhythmia`    | classify     | PTB-XL (~25 GB)  | PhysioNet `ptb-xl/1.0.3`              | none                   | gated by `MEDVERSE_FETCH_LARGE` |
+| `cardiac_age`       | regress      | PTB-XL + PTB (~32 GB) | PhysioNet                        | none                   | gated by `MEDVERSE_FETCH_LARGE` |
+| `skin_disease`      | classify     | HAM10000 (+ ISIC) | Kaggle `kmader/skin-cancer-mnist-ham10000` | `KAGGLE_USERNAME` + `KAGGLE_KEY` | HAM10000 with creds; ISIC gated by `MEDVERSE_FETCH_LARGE` |
+| `retinal_disease`   | classify     | ODIR-5K (~3.5 GB) | Kaggle `jeftaadriel/oia-odir-dataset` | `KAGGLE_USERNAME` + `KAGGLE_KEY` | ✅ with creds |
+| `retinal_age`       | regress      | ODIR-5K + RETFound MAE weights | Kaggle + HuggingFace `rmaphoh/RETFound_MAE` | `KAGGLE_*` + `HF_TOKEN` | ✅ with creds |
+
+When a pipeline can't proceed (large gate off, missing credentials, missing module), `pipeline_utils.DatasetUnavailable` is raised with a clear `.hint` describing exactly what to set.
+
+### Running pipelines
+
+```bash
+# One pipeline at a time
+cd models/ecg_biometric && python main.py
+
+# All 12 pipelines in sequence with per-pipeline timeouts + status JSON
+python train_all.py
+
+# Subset of pipelines
+python train_all.py --only ecg_biometric,parkinson_screener,fetal_health
+
+# Skip the slow ones
+python train_all.py --skip ecg_arrhythmia,cardiac_age,retinal_age
+
+# Opt into the large datasets for this run (otherwise gated pipelines raise DatasetUnavailable)
+python train_all.py --large
+
+# Custom timeout (seconds) and results path
+python train_all.py --timeout 600 --results train_all_results.json
+```
+
+`train_all.py` writes `train_all_results.json` after each pipeline so partial runs are durable. Each entry classifies the outcome as `ok` / `gated` / `timeout` / `fail`.
+
+### Shared dataset helpers
+
+[pipeline_utils.py](pipeline_utils.py) provides the cross-pipeline plumbing called from every `_load_dataframe` override:
+
+- `cache_dir(slug, sub)` — anchored at the project root, returns `models/<slug>/data/<sub>/`.
+- `is_large_allowed()` — reads `MEDVERSE_FETCH_LARGE`.
+- `require_env(*names, hint=…)` — raises `DatasetUnavailable` listing missing variables and what to set.
+- `require_module(name, install_hint=…)` — lazy-import; raises with the exact `pip install` line when missing.
+- `download_file(url, target, sha256=…)` — HTTP download with `tqdm` progress + SHA256 verify + skip-if-exists.
+- `download_physionet(records_url, target_dir)` — recursive PhysioNet wget with cache short-circuit.
+- `download_kaggle_dataset(slug, target)` — Kaggle Python API (not subprocess); auto-unzips.
+- `download_huggingface_file(repo_id, filename, target)` — `hf_hub_download` wrapper for single-file artefacts (e.g. RETFound weights).
+- `download_synapse_entity(entity_id, target)` — Synapse client wrapper for WearGait-PD.
+
+Per-pipeline `data_ingestion.py` files use marker-file checks (e.g. `ptbxl_database.csv` for PTB-XL, ≥70 `Person_*` dirs for ECG-ID, ≥250 `.hea` files for TPEHGDB) so partial caches are never treated as complete.
+
+### Runtime adapters (legacy)
+
+Pre-existing adapters in [src/ml/](src/ml/) and [src/biometric/](src/biometric/) (`ECGFounderAdapter`, `RespiratorySoundClassifier`, `ECGBiometric`) report `is_loaded = False` until weights land under `MEDVERSE_MODELS_DIR`; the graphs fall back to LLM-only assessment. The 12 pipelines above produce sklearn baselines today; swapping each one for the production architecture from its source notebook is a per-pipeline `_build_model` override.
 
 ## Development notes
 
@@ -948,6 +1049,13 @@ MedVerse ships **security-capable but not security-mandatory** — auth is off b
 - ✅ Federated-learning client wired to real SQLite ECG windows + 3-layer 1-D CNN.
 - ✅ TimescaleDB migration under `alembic/` (hypertables + 1m/1h continuous aggregates).
 - ✅ Safe `.env.example` + `frontend/.env.example`; `.env`, local DBs, ML weights gitignored.
+- ✅ **12 self-contained ML pipelines** under `models/<slug>/` — one per source experiment notebook, each with its own `main.py` + `data_schema/schema.yaml` + 4-stage component graph.
+- ✅ **Cross-pipeline runner** [train_all.py](train_all.py) — invokes every pipeline with per-pipeline timeouts, classifies outcomes (ok / gated / timeout / fail), persists `train_all_results.json` incrementally, supports `--only` / `--skip` / `--large` filters.
+- ✅ **Shared dataset loader** [pipeline_utils.py](pipeline_utils.py) — PhysioNet wget, Kaggle Python API, HuggingFace Hub, Synapse client, marker-file cache validation, `DatasetUnavailable` exception with actionable hints.
+- ✅ Smart download policy — small/auth-free datasets auto-download; large datasets gated behind `MEDVERSE_FETCH_LARGE`; auth-required pipelines gated behind credentials.
+- ✅ **Parallax marketing landing page** at `/` — Lenis smooth-scroll, Framer Motion `useScroll` parallax, sticky-blur top nav, 12-specialist grid, vest deep-dive, animated telemetry tickers.
+- ✅ **Procedural 3D vest** — fully built from Three.js primitives + procedural fabric/webbing `DataTexture` normal maps (no .glb assets); realistic stitching, centre zipper, flat webbing straps, 4 sensor styles (ECG electrode / PPG / DS18B20 / I²S mic), control module with vents + USB-C cutout.
+- ✅ Patient identity, alerts, care plans, audit log, FHIR export, handoff, doctor/patient dashboard split, register flow.
 
 ### User's to-do (not something I can do)
 
