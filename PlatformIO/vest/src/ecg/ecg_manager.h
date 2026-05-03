@@ -50,4 +50,13 @@ private:
   float         _lastRaw2    = 0;
   float         _heartRate   = 0;
   bool          _wasAbove    = false;
+
+  // Rolling window of recent inter-beat intervals (ms). HR is reported as
+  // the median of this window — one spurious peak no longer moves the
+  // output by ±100 bpm. Without this the previous detector reported HR
+  // jumps like 83 → 168 → 107 → 191 → 103 per beat in noisy conditions.
+  static constexpr int IBI_WINDOW = 5;
+  unsigned long _recentIBI[IBI_WINDOW] = {0};
+  int           _ibiIdx = 0;
+  int           _ibiCount = 0;
 };

@@ -56,21 +56,40 @@ void ECGManager::sample() {
   float threshold = baseline + 0.5f * (envelope > minEnv ? envelope : minEnv);
   bool above = (signal > threshold);
 
-  // Hard refractory: physiological max HR is ~220 bpm = 273 ms between R
-  // peaks. Anything sooner is a noise bump within the same QRS complex.
-  // Critically, _lastBeat is now only updated when we accept a beat —
-  // previously every noise rising-edge reset the timer, so the *next*
-  // real beat measured an interval from the noise (typically <300 ms),
-  // failed the validity gate, and HR never converged.
-  static constexpr unsigned long REFRACTORY_MS = 270;
+  // Hard refractory: 300 ms = 200 bpm cap. Tighter than the absolute
+  // physiological max (~220 bpm) because at-rest wearables almost never
+  // legitimately go above 180 bpm; better to reject borderline noise
+  // bumps that would otherwise produce HR=200 spikes.
+  // _lastBeat is only updated when we accept a beat — previously every
+  // noise rising-edge reset the timer, so the next real beat measured an
+  // interval from the noise (typically <300 ms) and HR never converged.
+  static constexpr unsigned long REFRACTORY_MS = 300;
   if (above && !_wasAbove) {
     unsigned long now = millis();
     if (_lastBeat == 0) {
       _lastBeat = now;   // first detection — seed the timer, no HR yet
     } else if (now - _lastBeat >= REFRACTORY_MS) {
-      float interval = (now - _lastBeat) / 1000.0f;
-      if (interval < 2.0f) {                  // <30 bpm = lead disconnect
-        _heartRate = 60.0f / interval;
+      unsigned long interval_ms = now - _lastBeat;
+      if (interval_ms < 2000) {              // >2s = <30 bpm = lead disconnect
+        // Push into the IBI window
+        _recentIBI[_ibiIdx] = interval_ms;
+        _ibiIdx = (_ibiIdx + 1) % IBI_WINDOW;
+        if (_ibiCount < IBI_WINDOW) _ibiCount++;
+        // HR = 60000 / median(recent IBIs). Median (not mean) so one
+        // outlier doesn't drag the reported rate.
+        if (_ibiCount >= 3) {
+          unsigned long sorted[IBI_WINDOW];
+          for (int i = 0; i < _ibiCount; i++) sorted[i] = _recentIBI[i];
+          for (int i = 0; i < _ibiCount; i++) {
+            for (int j = i + 1; j < _ibiCount; j++) {
+              if (sorted[j] < sorted[i]) {
+                unsigned long t = sorted[i]; sorted[i] = sorted[j]; sorted[j] = t;
+              }
+            }
+          }
+          unsigned long median = sorted[_ibiCount / 2];
+          _heartRate = 60000.0f / (float)median;
+        }
       }
       _lastBeat = now;                        // accept this beat
     }

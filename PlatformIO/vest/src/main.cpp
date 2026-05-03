@@ -53,7 +53,7 @@ void setup() {
   esp_task_wdt_add(NULL);
 
   Serial.println("\n========================================");
-  Serial.println("  AEGIS VEST — FULL SYSTEM v3.7         ");
+  Serial.println("  AEGIS VEST — FULL SYSTEM v3.8         ");
   Serial.println("  GY-87 + HW-611 + DHT11               ");
   Serial.println("========================================\n");
 
