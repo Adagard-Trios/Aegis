@@ -33,3 +33,7 @@ models/*/mlruns/
 
 # Alembic-managed Postgres / Timescale credentials
 alembic.local.ini
+
+# PlatformIO build artefacts + accidental venvs inside firmware folders
+PlatformIO/**/.pio/
+PlatformIO/**/.venv/

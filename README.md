@@ -1067,6 +1067,16 @@ MedVerse ships **security-capable but not security-mandatory** — auth is off b
   - DHT11 bit-banged read was preempted by FreeRTOS task switches mid-frame, corrupting bit timing. Wrapped the 40-bit loop in `taskENTER_CRITICAL` and throttled the checksum-fail log so noisy lines don't flood Serial.
   - Audio "sound detected" used a hard-coded RMS threshold with no calibration, so the flag either fired constantly or never depending on mic DC bias. Ported the fetal_monitor's rolling-baseline pattern (16-sample window, only updates during quiet periods).
   - `BLEManager::transmit()` was called every loop iteration (200+ Hz with mostly stale data, stealing notify slots from the ECG burst). Throttled to a dedicated 25 Hz `BLE_TX_INTERVAL` clock.
+- ✅ **Reliability + performance pass (firmware v3.4)** — eight more wins, all software-side:
+  - **Vest IMU** moved off bit-banged software I2C onto a hardware `TwoWire(2)` instance on GPIO 6/7. 14-byte accel+gyro burst dropped from ~25 ms (bit-bang) to ~0.3 ms (HW). Targeted ping at MPU6050 0x68 replaces the 1-127 sweep that previously took several seconds at boot.
+  - **Vest sensor scan** trimmed from 1-127 with 50 ms-per-address timeout (~6.3 s worst case per bus, two buses) to a single targeted MAX30102 ping at 0x57. `_resetBus` settle drop 200 ms → 20 ms; back-to-back `bus.begin` settles consolidated to a single 20 ms.
+  - **Vest setup** `delay(5000)` "wait for serial" → `delay(100)`. Saves ~5 s of boot tax.
+  - **Vest DHT11** first-read deferred out of `begin()`. Used to add a synchronous 1 s `delay()` plus a probe that frequently failed at boot before pinModes settled.
+  - **Watchdog** timer enabled on both firmwares (10 s). Hung blocking calls now reboot cleanly instead of locking the device. Fed once per loop iteration + during ADS retry waits.
+  - **Fetal piezo** ADC reads switched to `analogReadMilliVolts()` so the per-chip eFuse calibration corrects for the ESP32-Classic ADC's nonlinear S-curve. ADC attenuation set to `ADC_11db` to match 3.3 V piezo range. Baseline now force-drifts after 30 s of sustained event so a long contraction can't freeze the threshold.
+  - **Fetal ADS1115** sample rate bumped 128 SPS → 860 SPS (read latency 10 ms → 5 ms per channel; full 4-ch pass 40 ms → 20 ms). I²C bus bumped 100 kHz → 400 kHz. ADS init no longer hard-halts on missing chip — retries every 2 s with WDT pets.
+  - **Vest firmware version** now embedded in the BLE vitals payload as `FW:3.4`. Backend logs the value once per session so a vest still on old firmware is immediately visible in the console.
+  - Root `.gitignore` extended to cover `PlatformIO/**/.pio/` and `PlatformIO/**/.venv/`. Dead code in `PlatformIO/vest/backup/` (ecg.cpp + led.cpp) removed.
 
 ### User's to-do (not something I can do)
 

@@ -4,7 +4,10 @@
 SensorManager::SensorManager()
   : _bus1(0), _bus2(1) {}
 
-// ─── Bus reset ────────────────────────────────────────────────
+// ─── Bus reset — short version ────────────────────────────────
+// Standard 9-clock recovery sequence then release. The previous
+// `delay(200)` after each reset added 400 ms of boot tax for two
+// buses; 20 ms is plenty for the lines to settle.
 void SensorManager::_resetBus(int sda, int scl) {
   Serial.printf("  Resetting SDA:%d SCL:%d\n", sda, scl);
   pinMode(sda, INPUT_PULLUP);
@@ -19,27 +22,17 @@ void SensorManager::_resetBus(int sda, int scl) {
   digitalWrite(sda, HIGH); delayMicroseconds(10);
   pinMode(sda, INPUT);
   pinMode(scl, INPUT);
-  delay(200);
+  delay(20);
 }
 
-// ─── I2C scan with timeout ────────────────────────────────────
+// ─── Targeted MAX30102 ping ───────────────────────────────────
+// Replaces the wasteful 1-127 sweep that took up to 6.3 s per bus.
+// We only ever expect the MAX30102 (0x57) on these buses; HW-611
+// BMP280 (0x76) is probed separately by env_manager.
 bool SensorManager::_scanBus(TwoWire &bus, const char* label) {
-  Serial.printf("[SCAN] %s:\n", label);
-  bool found = false;
-  for (byte addr = 1; addr < 127; addr++) {
-    unsigned long t = millis();
-    bus.beginTransmission(addr);
-    byte err = bus.endTransmission();
-    if (millis() - t > 50) {
-      Serial.printf("  Timeout at 0x%02X\n", addr);
-      break;
-    }
-    if (err == 0) {
-      Serial.printf("  Found: 0x%02X\n", addr);
-      found = true;
-    }
-  }
-  if (!found) Serial.println("  NOTHING FOUND");
+  bus.beginTransmission(0x57);
+  bool found = (bus.endTransmission() == 0);
+  Serial.printf("[SCAN] %s — MAX30102 @ 0x57: %s\n", label, found ? "OK" : "absent");
   return found;
 }
 
@@ -71,8 +64,9 @@ bool SensorManager::begin() {
   _resetBus(SDA1, SCL1);
   _resetBus(SDA2, SCL2);
 
-  _bus1.begin(SDA1, SCL1, 100000); delay(200);
-  _bus2.begin(SDA2, SCL2, 100000); delay(200);
+  _bus1.begin(SDA1, SCL1, 100000);
+  _bus2.begin(SDA2, SCL2, 100000);
+  delay(20);   // single short settle, not one per bus
   // Cap blocking time per transaction to 50 ms — prevents the loop from
   // stalling for seconds when a sensor is unresponsive.
   _bus1.setTimeOut(50);

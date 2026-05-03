@@ -224,24 +224,23 @@ bool EnvManager::begin(TwoWire &sharedBus) {
   // ── BMP280 (HW-611) on shared I2C Bus 1 ────────────────────
   _bmpOk = _initBMP280();
 
-  // ── DHT11 — just configure pin, first read after 1 s ───────
+  // ── DHT11 ──────────────────────────────────────────────────
+  // We only configure the pin here; the first real read is deferred to
+  // the regular ENV_READ_INTERVAL tick. The DHT11 needs ~1 s after
+  // power-on before it can answer — main.cpp's setup() already burns
+  // hundreds of ms initialising other sensors, so by the time the loop
+  // reaches its first env tick the DHT11 is ready. Saves 1 s of boot
+  // time + the failure-prone synchronous probe that used to fail when
+  // initial power-up pinModes hadn't fully settled.
   pinMode(DHT11_PIN, INPUT_PULLUP);
-  delay(1000);   // DHT11 needs 1 s after power-on before first read
-  float tTest, hTest;
-  _dhtOk = _readDHT11(tTest, hTest);
-  if (_dhtOk)
-    Serial.printf("[ENV] DHT11 OK on GPIO %d (%.1f°C, %.0f%% RH).\n",
-                  DHT11_PIN, tTest, hTest);
-  else
-    Serial.printf("[ENV] DHT11 not responding on GPIO %d — check wiring & 10kΩ pull-up.\n",
-                  DHT11_PIN);
+  _dhtOk = true;   // optimistic — actual liveness shows up via dht11Valid
 
-  if (_bmpOk || _dhtOk)
-    Serial.println("[ENV] Environment sensors ready.\n");
+  if (_bmpOk)
+    Serial.println("[ENV] Environment sensors ready (DHT11 first read deferred).\n");
   else
-    Serial.println("[ENV] No environment sensors available.\n");
+    Serial.println("[ENV] BMP280 unavailable; DHT11 first read deferred.\n");
 
-  return (_bmpOk || _dhtOk);
+  return true;
 }
 
 // ══════════════════════════════════════════════════════════════

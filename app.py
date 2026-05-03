@@ -90,6 +90,11 @@ BR_WINDOW = SAMPLE_RATE * 10     # 10 s for breathing-rate
 ECG_SAMPLE_RATE = int(_os_sr.environ.get("MEDVERSE_ECG_SAMPLE_RATE", "250"))
 ECG_BUFFER_SIZE = ECG_SAMPLE_RATE * 4
 
+# Tracks the firmware revision string the vest reports in the vitals payload
+# (FW: field, v3.4+). Stays None on pre-v3.4 vests so the log line only fires
+# once per session when we actually see a new value.
+_logged_fw_version = None
+
 SIMULATION_MODE_GLOBAL = "Live"
 
 # Single-device deployment writes every row under ACTIVE_PATIENT_ID.
@@ -353,6 +358,16 @@ def handle_ble_notification(sender, data):
         ecg_hr = float(parts.get('EHR', 0))
         audio_a = float(parts.get('ARMS', 0))
         audio_d = float(parts.get('DRMS', 0))
+
+        # Log firmware version once per session so we can spot vests still
+        # running an old binary (no ECG burst, hard-coded R-peak threshold,
+        # etc). The FW field appears in firmware v3.4+; older vests omit it
+        # and `_logged_fw_version` sticks at None.
+        fw = parts.get('FW')
+        global _logged_fw_version
+        if fw and fw != _logged_fw_version:
+            print(f"[VEST] Firmware version: {fw}")
+            _logged_fw_version = fw
 
         with data_lock:
             time_counter += 1

@@ -31,6 +31,11 @@
 #define I2S_WS_PIN  45
 #define I2S_SD_PIN  48
 
+// ── Firmware version ──────────────────────────────────────────
+// Bumped on every flashed change so the backend can detect what payload
+// shape it's talking to (see app.py: handle_ble_notification reads `FW:`).
+#define FW_VERSION                "3.4"
+
 // ── BLE ───────────────────────────────────────────────────────
 #define BLE_DEVICE_NAME           "Aegis_SpO2_Live"
 #define SERVICE_UUID              "4fafc201-1fb5-459e-8fcc-c5c9c331914b"

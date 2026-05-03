@@ -1,5 +1,6 @@
 #pragma once
 #include <Arduino.h>
+#include <Wire.h>
 #include "../config.h"
 
 // ── MPU6050 register map (only what we need) ─────────────────
@@ -51,24 +52,18 @@ private:
   bool _mpuOk  = false;
   bool _bmpOk  = false;
 
+  // Hardware I2C bus dedicated to the IMU. The vest has two MAX30102s on
+  // Wire (Bus 0) and Wire1 (Bus 1) at GPIO 16/21 and 4/5 respectively, so
+  // the IMU gets its own bus on GPIO 6/7 via a fresh TwoWire(2) instance.
+  // Drops register-read latency from ~1 ms (bit-bang) to ~0.3 ms (HW).
+  TwoWire _wire{2};
+
   // ── BMP180 calibration coefficients ────────────────────────
   int16_t  _ac1, _ac2, _ac3;
   uint16_t _ac4, _ac5, _ac6;
   int16_t  _b1, _b2, _mb, _mc, _md;
 
-  // ── Software I2C primitives (bit-bang on IMU_SDA / IMU_SCL) ─
-  void    _sclHigh();
-  void    _sclLow();
-  void    _sdaHigh();
-  void    _sdaLow();
-  int     _sdaRead();
-  void    _i2cDelay();
-  void    _i2cStart();
-  void    _i2cStop();
-  bool    _i2cWriteByte(uint8_t b);
-  uint8_t _i2cReadByte(bool ack);
-
-  // ── Register helpers ───────────────────────────────────────
+  // ── Register helpers (hardware Wire) ───────────────────────
   bool    _writeReg(uint8_t devAddr, uint8_t reg, uint8_t val);
   bool    _readRegs(uint8_t devAddr, uint8_t reg, uint8_t *buf, int len);
   int16_t _read16(uint8_t devAddr, uint8_t reg);

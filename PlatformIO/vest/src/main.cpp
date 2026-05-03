@@ -1,4 +1,5 @@
 #include <Arduino.h>
+#include <esp_task_wdt.h>
 #include "config.h"
 #include "sensors/sensor_manager.h"
 #include "ble/ble_manager.h"
@@ -7,6 +8,11 @@
 #include "ecg/ecg_manager.h"
 #include "audio/audio_manager.h"
 #include "environment/env_manager.h"
+
+// 10-second task watchdog — any hung blocking call (I2C, DHT11, I2S read,
+// BLE) triggers a clean reboot instead of locking the device forever.
+// Fed once per loop iteration after all sensor reads are dispatched.
+#define WDT_TIMEOUT_S 10
 
 SensorManager sensors;
 BLEManager    ble;
@@ -37,10 +43,17 @@ bool          ppgActive      = true;
 
 void setup() {
   Serial.begin(115200);
-  delay(5000);
+  // Was delay(5000) "wait for serial" — pure boot tax. With ARDUINO_USB_CDC_ON_BOOT=0
+  // (set in platformio.ini) Serial routes to UART0 which is ready immediately.
+  delay(100);
+
+  // Enable watchdog before anything blocking can run, so init hangs reboot
+  // cleanly instead of bricking the device. true = panic+reboot on timeout.
+  esp_task_wdt_init(WDT_TIMEOUT_S, true);
+  esp_task_wdt_add(NULL);
 
   Serial.println("\n========================================");
-  Serial.println("  AEGIS VEST — FULL SYSTEM v3.2         ");
+  Serial.println("  AEGIS VEST — FULL SYSTEM v3.4         ");
   Serial.println("  GY-87 + HW-611 + DHT11               ");
   Serial.println("========================================\n");
 
@@ -127,6 +140,9 @@ void loop() {
     ble.transmitECGBurst(ecg);
     lastECGBurst = now;
   }
+
+  // Pet the watchdog — only reached if no read above hung for >WDT_TIMEOUT_S.
+  esp_task_wdt_reset();
 
   Serial.printf(
     "[DATA] PPG:%s IR:%lu | "

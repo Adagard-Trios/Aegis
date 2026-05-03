@@ -2,85 +2,32 @@
 #include <math.h>
 
 // ══════════════════════════════════════════════════════════════
-// Software I2C — bit-bang on IMU_SDA / IMU_SCL
+// Hardware I2C — TwoWire(2) on IMU_SDA / IMU_SCL (GPIO 6/7)
 //
-// Uses open-drain emulation: to drive HIGH we set the pin as
-// INPUT_PULLUP (external 4.7 kΩ or GY-87 on-board pull-ups
-// pull the line to 3.3 V).  To drive LOW we set OUTPUT + LOW.
+// Replaces the previous bit-banged software I2C. The ESP32-S3 has three
+// I2C peripherals; Wire (bus 0) + Wire1 (bus 1) are claimed by the two
+// MAX30102 sensors, so the IMU gets bus 2. Hardware I2C cuts a 14-byte
+// accel+gyro burst from ~25 ms (bit-bang at 100 kHz with 5 µs slack) to
+// ~0.3 ms — and frees the loop to stay close to its declared cadence.
 // ══════════════════════════════════════════════════════════════
 
-void IMUManager::_sclHigh() { pinMode(IMU_SCL, INPUT_PULLUP); }
-void IMUManager::_sclLow()  { pinMode(IMU_SCL, OUTPUT); digitalWrite(IMU_SCL, LOW); }
-void IMUManager::_sdaHigh() { pinMode(IMU_SDA, INPUT_PULLUP); }
-void IMUManager::_sdaLow()  { pinMode(IMU_SDA, OUTPUT); digitalWrite(IMU_SDA, LOW); }
-int  IMUManager::_sdaRead() { return digitalRead(IMU_SDA); }
-void IMUManager::_i2cDelay(){ delayMicroseconds(5); }   // ~100 kHz
-
-void IMUManager::_i2cStart() {
-  _sdaHigh(); _i2cDelay();
-  _sclHigh(); _i2cDelay();
-  _sdaLow();  _i2cDelay();
-  _sclLow();  _i2cDelay();
-}
-
-void IMUManager::_i2cStop() {
-  _sdaLow();  _i2cDelay();
-  _sclHigh(); _i2cDelay();
-  _sdaHigh(); _i2cDelay();
-}
-
-bool IMUManager::_i2cWriteByte(uint8_t b) {
-  for (int i = 7; i >= 0; i--) {
-    if (b & (1 << i)) _sdaHigh(); else _sdaLow();
-    _i2cDelay();
-    _sclHigh(); _i2cDelay();
-    _sclLow();  _i2cDelay();
-  }
-  // Read ACK bit (LOW = ACK)
-  _sdaHigh(); _i2cDelay();
-  _sclHigh(); _i2cDelay();
-  bool ack = !_sdaRead();
-  _sclLow();  _i2cDelay();
-  return ack;
-}
-
-uint8_t IMUManager::_i2cReadByte(bool ack) {
-  uint8_t b = 0;
-  _sdaHigh();
-  for (int i = 7; i >= 0; i--) {
-    _sclHigh(); _i2cDelay();
-    if (_sdaRead()) b |= (1 << i);
-    _sclLow();  _i2cDelay();
-  }
-  // Send ACK/NACK
-  if (ack) _sdaLow(); else _sdaHigh();
-  _i2cDelay();
-  _sclHigh(); _i2cDelay();
-  _sclLow();  _i2cDelay();
-  _sdaHigh();
-  return b;
-}
-
-// ── Register-level helpers ────────────────────────────────────
-
 bool IMUManager::_writeReg(uint8_t devAddr, uint8_t reg, uint8_t val) {
-  _i2cStart();
-  if (!_i2cWriteByte(devAddr << 1))       { _i2cStop(); return false; }
-  if (!_i2cWriteByte(reg))                { _i2cStop(); return false; }
-  if (!_i2cWriteByte(val))                { _i2cStop(); return false; }
-  _i2cStop();
-  return true;
+  _wire.beginTransmission(devAddr);
+  _wire.write(reg);
+  _wire.write(val);
+  return (_wire.endTransmission() == 0);
 }
 
 bool IMUManager::_readRegs(uint8_t devAddr, uint8_t reg, uint8_t *buf, int len) {
-  _i2cStart();
-  if (!_i2cWriteByte(devAddr << 1))       { _i2cStop(); return false; }
-  if (!_i2cWriteByte(reg))                { _i2cStop(); return false; }
-  _i2cStart();  // repeated start
-  if (!_i2cWriteByte((devAddr << 1) | 1)) { _i2cStop(); return false; }
-  for (int i = 0; i < len; i++)
-    buf[i] = _i2cReadByte(i < len - 1);   // ACK all except last byte
-  _i2cStop();
+  _wire.beginTransmission(devAddr);
+  _wire.write(reg);
+  if (_wire.endTransmission(false) != 0) return false;  // repeated start
+  uint8_t got = _wire.requestFrom(devAddr, (uint8_t)len);
+  if (got != len) return false;
+  for (int i = 0; i < len; i++) {
+    if (!_wire.available()) return false;
+    buf[i] = _wire.read();
+  }
   return true;
 }
 
@@ -165,29 +112,20 @@ bool IMUManager::_initBMP180() {
 // ══════════════════════════════════════════════════════════════
 
 bool IMUManager::begin() {
-  Serial.println("\n[IMU] Initializing GY-87 on software I2C...");
+  Serial.println("\n[IMU] Initializing GY-87 on hardware I2C (Wire2)...");
   Serial.printf("[IMU] SDA=GPIO %d, SCL=GPIO %d\n", IMU_SDA, IMU_SCL);
 
-  // Release both lines HIGH before first transaction
-  _sdaHigh();
-  _sclHigh();
-  delay(10);
+  _wire.begin(IMU_SDA, IMU_SCL, 100000);  // 100 kHz — same speed as the bit-bang
+  _wire.setTimeOut(50);                   // hard cap so a stuck bus can't lock the loop
 
-  // ── Quick bus scan ─────────────────────────────────────────
-  Serial.println("[IMU] Scanning software I2C bus...");
-  bool anyFound = false;
-  for (uint8_t addr = 1; addr < 127; addr++) {
-    _i2cStart();
-    bool ack = _i2cWriteByte(addr << 1);
-    _i2cStop();
-    if (ack) {
-      Serial.printf("[IMU]   Found device at 0x%02X\n", addr);
-      anyFound = true;
-    }
-    delayMicroseconds(50);
-  }
-  if (!anyFound) {
-    Serial.println("[IMU]   NOTHING FOUND — check wiring & pull-ups.");
+  // Targeted ping at the only two devices we care about (MPU6050 0x68,
+  // BMP180 0x77). Skips the wasteful 1-127 scan that previously blocked
+  // boot for several seconds even though every iteration except 2 was
+  // never going to find anything.
+  _wire.beginTransmission(MPU6050_ADDR);
+  bool mpuPresent = (_wire.endTransmission() == 0);
+  if (!mpuPresent) {
+    Serial.printf("[IMU]   MPU6050 not responding at 0x%02X — check wiring & pull-ups.\n", MPU6050_ADDR);
     Serial.println("[IMU] GY-87 init FAILED.\n");
     return false;
   }

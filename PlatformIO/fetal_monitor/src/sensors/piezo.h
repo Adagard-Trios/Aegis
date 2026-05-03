@@ -35,6 +35,13 @@ private:
     int  _bufferIndex[4];
     bool _bufferFull[4];
 
+    // Per-channel "last time the sensor was at rest" tracker. If a channel
+    // sits above the movement threshold for longer than BASELINE_FORCE_MS,
+    // the baseline is force-drifted toward the current reading so a sustained
+    // contraction (30-60 s) can't freeze the detection threshold.
+    unsigned long _lastRestMs[4] = {0};
+    static constexpr unsigned long BASELINE_FORCE_MS = 30000;
+
     void selectChannel(int ch);
     void updateBaseline(int index, int raw);
 };

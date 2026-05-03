@@ -70,7 +70,8 @@ void BLEManager::transmit(const SensorData       &ppg,
     // L1/L2/L3 raw samples are emitted on the ECG burst characteristic at
     // ~333 Hz; here we keep only the derived HR + status flags.
     "EHR:%.1f,EW:%d,EV:%d,"
-    "ARMS:%.0f,DRMS:%.0f,SD:%d",
+    "ARMS:%.0f,DRMS:%.0f,SD:%d,"
+    "FW:" FW_VERSION,
     ppg.ir1, ppg.red1, ppg.ir2, ppg.red2, ppg.ira, ppg.reda,
     ppg.temp1, ppg.temp2,
     temp.leftAxilla, temp.rightAxilla, temp.cervical,
