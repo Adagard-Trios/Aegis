@@ -1085,6 +1085,12 @@ MedVerse ships **security-capable but not security-mandatory** — auth is off b
   - **IMU regression** from v3.4 reverted (see above note). IMU now reads pitch/roll/BMP180 again.
   - **DS18B20 -127 sentinel filter** — DallasTemperature library returns -127 °C when a probe momentarily fails to ACK. We now hold the previous reading for any value outside the physiological 25-45 °C window, so a momentary glitch no longer renders as a huge red spike on the dashboard or in the ML pipelines.
   - `FW_VERSION` bumped 3.4 → 3.5 so the backend's `[VEST] Firmware version: 3.5` log confirms the reflash actually landed.
+- ✅ **Vest v3.6 + v3.7 field-fix pass** — caught from on-device serial output after v3.5 reflash:
+  - **ECG dual-lead R-peak detection** — was locked to Lead II, but real electrode placement on this vest puts the dominant QRS on Lead I (~880 mV peak-to-peak vs Lead II's ~340 mV). Now tracks baseline + envelope on both leads and detects on whichever currently has the larger envelope — self-selects per wearer.
+  - **ECG refractory period** — physiological max HR is ~220 bpm = 273 ms between R peaks. The previous detector unconditionally updated `_lastBeat` on every rising edge, so noise bumps reset the timer and the next real beat measured a sub-300 ms interval that failed validity. Now `_lastBeat` only advances when the new beat is past the refractory window.
+  - **BMP180 counterfeit-cal protection** — many cheap GY-87 modules ship with a clone BMP180 whose temperature-related calibration registers (AC5/AC6/MC/MD) are correct but whose pressure-related registers (AC1/AC2/AC3/AC4/B1/B2) are out of datasheet range. Symptom: temp reads correctly (~33 °C), pressure outputs nonsense (~1613 hPa). v3.6 logs all calibration values during boot so the chip can be identified, and clamps published pressure to 800-1100 hPa with last-good fallback. The HW-611 BMP280 right next door reads correctly, so we don't actually lose pressure data.
+  - **INMP441 sample shift** — `>> 11` was over-aggressive (divides 24-bit samples by 2048), flooring typical room-noise levels to zero before RMS, hence `Audio D:0` forever. Replaced with the standard `>> 8` which sign-extends the 24-bit MSB-justified sample into the int32 word.
+  - `FW_VERSION` bumped 3.5 → 3.6 → 3.7 so each reflash is unambiguously visible in the backend log.
 
 ### User's to-do (not something I can do)
 

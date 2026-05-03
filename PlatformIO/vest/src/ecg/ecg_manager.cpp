@@ -56,15 +56,25 @@ void ECGManager::sample() {
   float threshold = baseline + 0.5f * (envelope > minEnv ? envelope : minEnv);
   bool above = (signal > threshold);
 
+  // Hard refractory: physiological max HR is ~220 bpm = 273 ms between R
+  // peaks. Anything sooner is a noise bump within the same QRS complex.
+  // Critically, _lastBeat is now only updated when we accept a beat —
+  // previously every noise rising-edge reset the timer, so the *next*
+  // real beat measured an interval from the noise (typically <300 ms),
+  // failed the validity gate, and HR never converged.
+  static constexpr unsigned long REFRACTORY_MS = 270;
   if (above && !_wasAbove) {
     unsigned long now = millis();
-    if (_lastBeat > 0) {
+    if (_lastBeat == 0) {
+      _lastBeat = now;   // first detection — seed the timer, no HR yet
+    } else if (now - _lastBeat >= REFRACTORY_MS) {
       float interval = (now - _lastBeat) / 1000.0f;
-      if (interval > 0.3f && interval < 2.0f) {
+      if (interval < 2.0f) {                  // <30 bpm = lead disconnect
         _heartRate = 60.0f / interval;
       }
+      _lastBeat = now;                        // accept this beat
     }
-    _lastBeat = now;
+    // else: within refractory window, ignore — don't update _lastBeat
   }
   _wasAbove = above;
 }

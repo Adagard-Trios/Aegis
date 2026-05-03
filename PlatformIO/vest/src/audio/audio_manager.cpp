@@ -81,7 +81,14 @@ void AudioManager::read(AudioData &data) {
       long long sum = 0;
       int32_t  pk   = 0;
       for (int i = 0; i < n; i++) {
-        int32_t s = buf[i] >> 11;
+        // INMP441 outputs 24-bit signed audio MSB-justified in a 32-bit
+        // word: bits [31:8] = sample, bits [7:0] = zero. The arithmetic
+        // right-shift by 8 sign-extends and gives the true 24-bit value
+        // in int32_t. The previous `>> 11` was an over-aggressive scale
+        // that floored typical room-noise levels (24-bit magnitudes
+        // around ±2000-10000) to zero before RMS — which is why the
+        // digital mic was reporting D:0 forever.
+        int32_t s = buf[i] >> 8;
         sum += (long long)s * s;
         if (abs(s) > abs(pk)) pk = s;
       }
