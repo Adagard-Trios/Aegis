@@ -70,3 +70,31 @@
 
 // ── ECG warmup ────────────────────────────────────────────────
 #define ECG_WARMUP_MS 10000
+
+// ── Logging ───────────────────────────────────────────────────
+// Levels: 0=ERR only, 1=+WARN, 2=+INFO (default), 3=+DEBUG (verbose).
+// Higher levels compile more strings into flash; production build with -DLOG_LEVEL=0.
+#ifndef LOG_LEVEL
+  #define LOG_LEVEL 2
+#endif
+
+#if LOG_LEVEL >= 0
+  #define LOG_ERR(fmt, ...)   Serial.printf("[ERR] "  fmt "\n", ##__VA_ARGS__)
+#else
+  #define LOG_ERR(...)        do {} while (0)
+#endif
+#if LOG_LEVEL >= 1
+  #define LOG_WARN(fmt, ...)  Serial.printf("[WARN] " fmt "\n", ##__VA_ARGS__)
+#else
+  #define LOG_WARN(...)       do {} while (0)
+#endif
+#if LOG_LEVEL >= 2
+  #define LOG_INFO(fmt, ...)  Serial.printf("[INFO] " fmt "\n", ##__VA_ARGS__)
+#else
+  #define LOG_INFO(...)       do {} while (0)
+#endif
+#if LOG_LEVEL >= 3
+  #define LOG_DEBUG(fmt, ...) Serial.printf("[DBG] "  fmt "\n", ##__VA_ARGS__)
+#else
+  #define LOG_DEBUG(...)      do {} while (0)
+#endif

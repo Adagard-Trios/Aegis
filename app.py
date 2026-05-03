@@ -296,23 +296,60 @@ def posture_label(sa):
 # =============================================================
 
 def handle_fetal_notification(sender, data):
+    """Parses fetal monitor BLE payload. Supports both formats:
+
+    - Compact ASCII (current firmware, post-NimBLE migration):
+        ts:123,mode:0,pz0:1234,pz1:1234,...,k0:0,k1:0,...,c0:0,c1:0
+    - JSON (legacy firmware): {"mode":0,"pz":[...],"kick":[...],...}
+
+    Auto-detects on the leading character so old binaries keep working
+    until reflashed.
+    """
     global f_connected, f_mode
     try:
         f_connected = True
         decoded = data.decode('utf-8').strip()
-        parsed = json.loads(decoded)
-        
+
+        if decoded.startswith('{'):
+            # Legacy JSON path — kept for backwards compat with pre-NimBLE firmware
+            parsed = json.loads(decoded)
+            with data_lock:
+                f_mode = parsed.get("mode", 0)
+                f_pz_data.append(parsed.get("pz", [0,0,0,0]))
+                f_kick_data.append(parsed.get("kick", [0,0,0,0]))
+                f_move_data.append(parsed.get("move", [0,0,0,0]))
+                f_mv_data.append(parsed.get("mv", [0.0,0.0]))
+                f_heart_data.append(parsed.get("heart", [0,0]))
+                f_bowel_data.append(parsed.get("bowel", [0,0]))
+                f_fp_data.append(parsed.get("fp", [0.0,0.0]))
+                f_cont_data.append(parsed.get("cont", [0,0]))
+            return
+
+        # Compact ASCII path — same parser shape as the vest's vitals payload
+        parts = {}
+        for p in decoded.split(','):
+            if ':' in p:
+                k, v = p.split(':', 1)
+                parts[k] = v
+
+        def _i(k, default=0):
+            try: return int(parts.get(k, default))
+            except (TypeError, ValueError): return default
+        def _f(k, default=0.0):
+            try: return float(parts.get(k, default))
+            except (TypeError, ValueError): return default
+
         with data_lock:
-            f_mode = parsed.get("mode", 0)
-            f_pz_data.append(parsed.get("pz", [0,0,0,0]))
-            f_kick_data.append(parsed.get("kick", [0,0,0,0]))
-            f_move_data.append(parsed.get("move", [0,0,0,0]))
-            f_mv_data.append(parsed.get("mv", [0.0,0.0]))
-            f_heart_data.append(parsed.get("heart", [0,0]))
-            f_bowel_data.append(parsed.get("bowel", [0,0]))
-            f_fp_data.append(parsed.get("fp", [0.0,0.0]))
-            f_cont_data.append(parsed.get("cont", [0,0]))
-            
+            f_mode = _i('mode', 0)
+            f_pz_data.append([_i(f'pz{i}') for i in range(4)])
+            f_kick_data.append([_i(f'k{i}') for i in range(4)])
+            f_move_data.append([_i(f'm{i}') for i in range(4)])
+            f_mv_data.append([_f(f'mv{i}') for i in range(2)])
+            f_heart_data.append([_i(f'ht{i}') for i in range(2)])
+            f_bowel_data.append([_i(f'bs{i}') for i in range(2)])
+            f_fp_data.append([_f(f'fp{i}') for i in range(2)])
+            f_cont_data.append([_i(f'c{i}') for i in range(2)])
+
     except Exception as e:
         print(f"Fetal Parse error: {e}")
 
