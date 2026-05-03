@@ -51,6 +51,12 @@ private:
   bool _mpuOk  = false;
   bool _bmpOk  = false;
 
+  // Last-good pressure cache. The BMP180 in the GY-87 module periodically
+  // returns nonsense (we observed 1613 hPa with otherwise-correct temp,
+  // suggesting a partial calibration-register read failure through the
+  // MPU6050 I2C bypass). Anything outside 800-1100 hPa is rejected.
+  float _lastGoodPressure_hPa = 0.0f;
+
   // Software I2C on GPIO 6/7. Tried hardware I2C in v3.4 — that broke
   // because the ESP32-S3 only has TWO I2C peripherals (Wire + Wire1) and
   // both are already claimed by the MAX30102 sensors on bus 0/1.

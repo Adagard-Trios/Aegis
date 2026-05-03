@@ -162,7 +162,16 @@ bool IMUManager::_initBMP180() {
   _mc  = _read16(BMP180_ADDR, 0xBC);
   _md  = _read16(BMP180_ADDR, 0xBE);
 
+  // Dump cal values so we can diagnose pressure-formula bugs in the field.
+  // Datasheet typical ranges: AC1 ~408-1980, AC2 ~-72..-65, AC3 ~-14383..-14000,
+  // AC4 ~32741-32766, AC5 ~23153-25500, AC6 ~22025-23153, B1 ~5498-6515,
+  // B2 ~36-50. Values way outside these ranges (or all zero) usually mean a
+  // bad I2C-bypass read → garbage pressure (e.g. our v3.5 saw 1613 hPa).
   Serial.println("[IMU] BMP180 OK — calibration loaded.");
+  Serial.printf("[IMU] BMP180 cal: AC1=%d AC2=%d AC3=%d AC4=%u AC5=%u AC6=%u\n",
+                _ac1, _ac2, _ac3, _ac4, _ac5, _ac6);
+  Serial.printf("[IMU] BMP180 cal: B1=%d B2=%d MB=%d MC=%d MD=%d\n",
+                _b1, _b2, _mb, _mc, _md);
   return true;
 }
 
@@ -310,4 +319,15 @@ void IMUManager::read(PostureData &data) {
   }
 
   _readBMP(data.bmpTempC, data.pressure_hPa);
+
+  // Sanity-clamp pressure. Earth-surface atmospheric pressure is
+  // ~870-1085 hPa under all reasonable conditions; anything outside
+  // 800-1100 is a calibration / bypass-read glitch (see BMP180 boot log
+  // for the cal values). Hold the previous good value so the dashboard
+  // doesn't render junk.
+  if (data.pressure_hPa < 800.0f || data.pressure_hPa > 1100.0f) {
+    data.pressure_hPa = _lastGoodPressure_hPa;
+  } else {
+    _lastGoodPressure_hPa = data.pressure_hPa;
+  }
 }
