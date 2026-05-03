@@ -22,4 +22,9 @@ private:
   DallasTemperature _dt;
   DeviceAddress  _addr[3];
   int            _sensorCount = 0;
+  // Last-good cache. DallasTemperature returns -127 when a sensor
+  // momentarily fails to respond; we hold the previous value rather than
+  // letting that sentinel reach the BLE payload (where it'd render as a
+  // huge red spike on the dashboard).
+  float          _lastGood[3] = {0.0f, 0.0f, 0.0f};
 };

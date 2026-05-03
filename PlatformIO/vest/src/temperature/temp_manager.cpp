@@ -49,10 +49,23 @@ void TempManager::read(TempData &data) {
     return;
   }
 
-  // Read current conversion results
-  data.leftAxilla  = (_sensorCount > 0) ? _dt.getTempC(_addr[0]) : 0.0;
-  data.rightAxilla = (_sensorCount > 1) ? _dt.getTempC(_addr[1]) : 0.0;
-  data.cervical    = (_sensorCount > 2) ? _dt.getTempC(_addr[2]) : 0.0;
+  // Read current conversion results, filtering DallasTemperature's -127
+  // "device not found" sentinel. A failing read holds the last-good value
+  // so the dashboard doesn't render a huge red spike on momentary glitches.
+  // Sane physiological range for skin temp: 25-45 °C.
+  auto safeRead = [&](int idx) -> float {
+    if (_sensorCount <= idx) return 0.0f;
+    float t = _dt.getTempC(_addr[idx]);
+    if (t < 25.0f || t > 45.0f) {
+      // -127 (no device) or 85.0 (DS18B20 power-on default) or out-of-range
+      return _lastGood[idx];
+    }
+    _lastGood[idx] = t;
+    return t;
+  };
+  data.leftAxilla  = safeRead(0);
+  data.rightAxilla = safeRead(1);
+  data.cervical    = safeRead(2);
   data.valid       = true;
 
   // Request next conversion (non-blocking — ready in ~375ms)

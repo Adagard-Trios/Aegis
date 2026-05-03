@@ -34,7 +34,7 @@
 // ── Firmware version ──────────────────────────────────────────
 // Bumped on every flashed change so the backend can detect what payload
 // shape it's talking to (see app.py: handle_ble_notification reads `FW:`).
-#define FW_VERSION                "3.4"
+#define FW_VERSION                "3.5"
 
 // ── BLE ───────────────────────────────────────────────────────
 #define BLE_DEVICE_NAME           "Aegis_SpO2_Live"

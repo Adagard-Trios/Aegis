@@ -1068,7 +1068,7 @@ MedVerse ships **security-capable but not security-mandatory** — auth is off b
   - Audio "sound detected" used a hard-coded RMS threshold with no calibration, so the flag either fired constantly or never depending on mic DC bias. Ported the fetal_monitor's rolling-baseline pattern (16-sample window, only updates during quiet periods).
   - `BLEManager::transmit()` was called every loop iteration (200+ Hz with mostly stale data, stealing notify slots from the ECG burst). Throttled to a dedicated 25 Hz `BLE_TX_INTERVAL` clock.
 - ✅ **Reliability + performance pass (firmware v3.4)** — eight more wins, all software-side:
-  - **Vest IMU** moved off bit-banged software I2C onto a hardware `TwoWire(2)` instance on GPIO 6/7. 14-byte accel+gyro burst dropped from ~25 ms (bit-bang) to ~0.3 ms (HW). Targeted ping at MPU6050 0x68 replaces the 1-127 sweep that previously took several seconds at boot.
+  - **Vest IMU** targeted-ping at MPU6050 0x68 replaces the 1-127 sweep that previously took several seconds at boot. *(v3.4 also moved the IMU to hardware `TwoWire(2)` — that turned out to be wrong: ESP32-S3 has only 2 I²C peripherals, both already claimed by the MAX30102 sensors, so `TwoWire(2)` silently mapped to bus 0 and broke the IMU. Reverted in v3.5 back to bit-banged software I²C; targeted ping kept.)*
   - **Vest sensor scan** trimmed from 1-127 with 50 ms-per-address timeout (~6.3 s worst case per bus, two buses) to a single targeted MAX30102 ping at 0x57. `_resetBus` settle drop 200 ms → 20 ms; back-to-back `bus.begin` settles consolidated to a single 20 ms.
   - **Vest setup** `delay(5000)` "wait for serial" → `delay(100)`. Saves ~5 s of boot tax.
   - **Vest DHT11** first-read deferred out of `begin()`. Used to add a synchronous 1 s `delay()` plus a probe that frequently failed at boot before pinModes settled.
@@ -1081,6 +1081,10 @@ MedVerse ships **security-capable but not security-mandatory** — auth is off b
 - ✅ **Heart-tone classifier rewrite** — replaced the hard-coded `0.001 < energy < 0.05 → heart` magic numbers (which assumed a fixed MAX9814 gain that the chip's AGC actively defeats) with a self-calibrating, rhythm-based detector. Tracks recent peak timestamps in a per-channel ring buffer; classifies as fetal heart tone when ≥3 inter-peak intervals land in the 333–545 ms window (110–180 bpm). Bowel sound = sustained energy elevation that is NOT rhythmic. Still a heuristic — true fetal-HR extraction needs proper band-pass + autocorrelation in the envelope band — but this one actually adapts to the installed mic gain.
 - ✅ **NimBLE-Arduino patch bump** — vest goes 1.4.1 → ^1.4.3 (bug fixes within the 1.x line, no API breaks). Stays off 2.x because the `onConnect/onDisconnect` callback signature change is API-breaking and we can't run an integration test cycle in CI.
 - ✅ **Log-level macros** added to both `config.h` files — `LOG_ERR`/`LOG_WARN`/`LOG_INFO`/`LOG_DEBUG` gated by a `LOG_LEVEL` define (default 2 = INFO+). New code can use these; existing `Serial.printf` calls are left in place to avoid pure-churn diffs. Production builds can compile out chatty logs with `-DLOG_LEVEL=0`.
+- ✅ **Vest v3.5 hot-fix pass** — caught from on-device serial output:
+  - **IMU regression** from v3.4 reverted (see above note). IMU now reads pitch/roll/BMP180 again.
+  - **DS18B20 -127 sentinel filter** — DallasTemperature library returns -127 °C when a probe momentarily fails to ACK. We now hold the previous reading for any value outside the physiological 25-45 °C window, so a momentary glitch no longer renders as a huge red spike on the dashboard or in the ML pipelines.
+  - `FW_VERSION` bumped 3.4 → 3.5 so the backend's `[VEST] Firmware version: 3.5` log confirms the reflash actually landed.
 
 ### User's to-do (not something I can do)
 
