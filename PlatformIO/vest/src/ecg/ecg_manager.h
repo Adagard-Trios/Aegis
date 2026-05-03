@@ -34,6 +34,15 @@ private:
   int    _count        = 0;
   int    _pendingCount = 0;      // samples written since last drainSamples()
 
+  // Adaptive R-peak detection state — replaces the broken hard-coded
+  // 1980 mV threshold which assumed signals would rail to >60% of supply.
+  // We track a slow-moving baseline (low-pass IIR) and a fast-attack /
+  // slow-decay envelope of the deviation; threshold = baseline + 50%
+  // envelope. Held to a 100 mV minimum so noise alone can't trigger.
+  float  _baseline2  = 1650.0f;  // mV — starts at mid-rail
+  float  _envelope2  = 100.0f;   // mV — peak deviation tracker
+  static constexpr float R_PEAK_MIN_ENVELOPE_MV = 100.0f;
+
   unsigned long _startTime   = 0;
   unsigned long _lastBeat    = 0;
   float         _lastRaw2    = 0;

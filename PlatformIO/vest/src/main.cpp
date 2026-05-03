@@ -29,6 +29,7 @@ unsigned long lastTempRead   = 0;
 unsigned long lastECGSample  = 0;
 unsigned long lastECGProcess = 0;
 unsigned long lastECGBurst   = 0;
+unsigned long lastBLETX      = 0;
 unsigned long lastAudioRead  = 0;
 unsigned long lastEnvRead    = 0;
 unsigned long ppgActiveStart = 0;
@@ -112,7 +113,13 @@ void loop() {
     lastAudioRead = now;
   }
 
-  ble.transmit(ppgData, postureData, tempData, ecgData, audioData, envData);
+  // Vitals notify on its own clock (25 Hz). Used to fire every loop iteration
+  // (200+ Hz with mostly-stale data) which wasted CPU + radio + stole notify
+  // slots from the ECG burst characteristic.
+  if (now - lastBLETX >= BLE_TX_INTERVAL) {
+    ble.transmit(ppgData, postureData, tempData, ecgData, audioData, envData);
+    lastBLETX = now;
+  }
 
   // Drain the ECG ring buffer at ~30 Hz on its own characteristic — this is
   // what gives the backend true 333 Hz instead of the 1 Hz scalar in vitals.

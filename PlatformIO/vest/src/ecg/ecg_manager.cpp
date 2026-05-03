@@ -17,12 +17,40 @@ void ECGManager::begin() {
 }
 
 void ECGManager::sample() {
-  _buf1[_idx] = (float)analogRead(ECG1_PIN);
-  _buf2[_idx] = (float)analogRead(ECG2_PIN);
+  float raw1 = (float)analogRead(ECG1_PIN);
+  float raw2 = (float)analogRead(ECG2_PIN);
+  _buf1[_idx] = raw1;
+  _buf2[_idx] = raw2;
   _idx = (_idx + 1) % BUF;
   if (_count < BUF) _count++;
-  // Cap pending at BUF — if drains fall behind that long, we lose oldest samples
   if (_pendingCount < BUF) _pendingCount++;
+
+  // ── Adaptive R-peak detection on Lead II ───────────────────
+  // Slow IIR baseline (~0.05 Hz cutoff at 333 Hz sample rate) so DC/breath drift
+  // doesn't move the threshold. Fast-attack / slow-decay envelope tracks the
+  // recent peak deviation above baseline. Threshold sits at baseline + 50% of
+  // envelope, with a 100 mV floor so a flat-line signal can't trigger noise.
+  float lead2_mv = (raw2 / 4095.0f) * 3300.0f;
+  _baseline2 = _baseline2 * 0.999f + lead2_mv * 0.001f;
+  float dev = lead2_mv - _baseline2;
+  if (dev > _envelope2) _envelope2 = _envelope2 * 0.85f  + dev * 0.15f;   // fast attack
+  else                  _envelope2 = _envelope2 * 0.998f + dev * 0.002f;  // slow decay
+
+  float envelope = (_envelope2 > R_PEAK_MIN_ENVELOPE_MV) ? _envelope2 : R_PEAK_MIN_ENVELOPE_MV;
+  float threshold = _baseline2 + 0.5f * envelope;
+  bool above = (lead2_mv > threshold);
+
+  if (above && !_wasAbove) {
+    unsigned long now = millis();
+    if (_lastBeat > 0) {
+      float interval = (now - _lastBeat) / 1000.0f;
+      if (interval > 0.3f && interval < 2.0f) {
+        _heartRate = 60.0f / interval;
+      }
+    }
+    _lastBeat = now;
+  }
+  _wasAbove = above;
 }
 
 int ECGManager::drainSamples(float* lead1_mv, float* lead2_mv, int max) {
@@ -40,39 +68,17 @@ int ECGManager::drainSamples(float* lead1_mv, float* lead2_mv, int max) {
 }
 
 void ECGManager::process(ECGData &data) {
+  // R-peak detection now lives in sample() at 333 Hz so we don't miss QRS
+  // complexes between process() ticks. process() just exposes the latest
+  // mV scalars + status flags for the BLE vitals payload.
   data.warmingUp = (millis() - _startTime) < ECG_WARMUP_MS;
 
   int latest = (_idx - 1 + BUF) % BUF;
-  float raw1  = _buf1[latest];
-  float raw2  = _buf2[latest];
+  data.lead1_mv = (_buf1[latest] / 4095.0f) * 3300.0f;
+  data.lead2_mv = (_buf2[latest] / 4095.0f) * 3300.0f;
+  data.lead3_mv = data.lead2_mv - data.lead1_mv;  // Einthoven III = II - I
 
-  // Convert 12-bit ADC → millivolts
-  data.lead1_mv = (raw1 / 4095.0f) * 3300.0f;
-  data.lead2_mv = (raw2 / 4095.0f) * 3300.0f;
-
-  // Einthoven's equation: III = II - I
-  data.lead3_mv = data.lead2_mv - data.lead1_mv;
-
-  // Simple R-peak detection on Lead II
-  // Threshold = 60% of supply = ~1980mV
-  float threshold = 1980.0f;
-  bool  above     = (data.lead2_mv > threshold);
-
-  if (above && !_wasAbove) {
-    unsigned long now = millis();
-    if (_lastBeat > 0) {
-      float interval = (now - _lastBeat) / 1000.0f;
-      if (interval > 0.3f && interval < 2.0f) {
-        _heartRate = 60.0f / interval;
-      }
-    }
-    _lastBeat      = now;
-    data.qrsDetected = true;
-  } else {
-    data.qrsDetected = false;
-  }
-  _wasAbove = above;
-
-  data.heartRate = _heartRate;
-  data.valid     = !data.warmingUp && (_count > 100);
+  data.heartRate   = _heartRate;
+  data.qrsDetected = false;  // per-tick QRS flag retired with the move to sample()
+  data.valid       = !data.warmingUp && (_count > 100);
 }

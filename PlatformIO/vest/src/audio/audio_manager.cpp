@@ -41,6 +41,16 @@ bool AudioManager::begin() {
   return true;
 }
 
+void AudioManager::_updateBaseline(float* buf, int& idx, bool& full, float& baseline, float val) {
+  buf[idx] = val;
+  idx = (idx + 1) % BASELINE_WINDOW;
+  if (idx == 0) full = true;
+  int n = full ? BASELINE_WINDOW : (idx > 0 ? idx : 1);
+  float sum = 0.0f;
+  for (int i = 0; i < n; i++) sum += buf[i];
+  baseline = sum / n;
+}
+
 void AudioManager::read(AudioData &data) {
   // ── MAX9814 analog ────────────────────────────────────────
   long sumSq = 0;
@@ -49,7 +59,10 @@ void AudioManager::read(AudioData &data) {
     int v = analogRead(MIC_ANALOG_PIN) - 2048;
     sumSq += (long)v * v;
     if (abs(v) > peak) peak = abs(v);
-    delayMicroseconds(50);
+    // ESP32-S3 ADC sample-and-hold settles in ~3 µs — the 50 µs delay
+    // here was costing us 12.8 ms of blocking per audio cycle for no
+    // signal-quality benefit.
+    delayMicroseconds(5);
   }
   data.analogRMS  = sqrt((float)sumSq / ANALOG_N);
   data.analogPeak = (float)peak;
@@ -77,8 +90,24 @@ void AudioManager::read(AudioData &data) {
     }
   }
 
-  // Sound event threshold — tune after testing on vest
-  data.soundDetected = (data.digitalRMS > 500.0f ||
-                        data.analogRMS  > 200.0f);
+  // ── Adaptive sound detection ──────────────────────────────
+  // Compare RMS against a rolling per-mic baseline, not a hard-coded
+  // threshold. A sound event needs (a) significant absolute deviation
+  // from the floor AND (b) a meaningful relative increase (1.5×) so a
+  // quiet ambient drift doesn't flip the flag.
+  float analogDelta  = data.analogRMS  - _analogBaseline;
+  float digitalDelta = data.digitalRMS - _digitalBaseline;
+
+  data.soundDetected =
+    (analogDelta  > 50.0f  && data.analogRMS  > _analogBaseline  * 1.5f) ||
+    (digitalDelta > 100.0f && data.digitalRMS > _digitalBaseline * 1.5f);
+
+  // Update baselines only during quiet periods so a sustained loud event
+  // doesn't bake itself in.
+  if (analogDelta  < 50.0f)
+    _updateBaseline(_analogBuf,  _analogIdx,  _analogFull,  _analogBaseline,  data.analogRMS);
+  if (digitalDelta < 100.0f)
+    _updateBaseline(_digitalBuf, _digitalIdx, _digitalFull, _digitalBaseline, data.digitalRMS);
+
   data.valid = true;
 }

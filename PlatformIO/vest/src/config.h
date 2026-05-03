@@ -56,6 +56,7 @@
 #define ECG_PROCESS_INTERVAL 200     // 5 Hz HR/QRS-flag refresh (was 1000)
 #define ECG_BURST_INTERVAL   33      // ~30 Hz BLE notify → 11 samples/burst at 333 Hz
 #define ECG_BURST_MAX        16      // hard cap on samples per burst packet
+#define BLE_TX_INTERVAL      40      // 25 Hz vitals notify (was: every loop iter)
 #define AUDIO_INTERVAL       1000
 #define TEMP_READ_INTERVAL   5000
 #define ENV_READ_INTERVAL    5000

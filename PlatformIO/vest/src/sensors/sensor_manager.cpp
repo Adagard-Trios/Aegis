@@ -189,14 +189,14 @@ void SensorManager::read(SensorData &d) {
     d.ira = ir2; d.reda = red2;
   }
 
-  // ── Die temperature (sampled every TEMP_READ_INTERVAL loops) ─
-  _tempCounter++;
-  if (_tempCounter >= TEMP_READ_INTERVAL) {
+  // ── Die temperature (millis()-timed, every MAX_DIE_TEMP_MS = 5 s) ──
+  unsigned long nowMs = millis();
+  if (nowMs - _lastTempMs >= MAX_DIE_TEMP_MS) {
     _temp1 = _s1ok ? _sensor1.readTemperature() : 0.0;
     _temp2 = _s2ok ? _sensor2.readTemperature() : 0.0;
     if (!_s1ok) _temp1 = _temp2;
     if (!_s2ok) _temp2 = _temp1;
-    _tempCounter = 0;
+    _lastTempMs = nowMs;
   }
 
   d.ir1        = ir1;     d.red1  = red1;

@@ -52,7 +52,12 @@ private:
   float _cal_red1 = 0, _cal_red2 = 0;
   int   _cal_count = 0;
 
-  int   _tempCounter = 0;
+  // MAX30102 die-temperature: refreshed on a millis() timer so it actually
+  // fires every MAX_DIE_TEMP_MS (5 s). The previous `_tempCounter++` against
+  // TEMP_READ_INTERVAL was reading the constant as a loop count, which fired
+  // only every ~125 s instead of every 5 s.
+  static constexpr unsigned long MAX_DIE_TEMP_MS = 5000;
+  unsigned long _lastTempMs = 0;
   float _temp1 = 0.0, _temp2 = 0.0;
 
   void  _resetBus(int sda, int scl);

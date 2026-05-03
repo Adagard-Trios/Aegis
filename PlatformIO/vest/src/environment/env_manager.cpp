@@ -135,10 +135,19 @@ void EnvManager::_readBMP280(float &tempC, float &pressHpa, bool &valid) {
 //  Protocol:  MCU LOW 18 ms → release → DHT responds →
 //             40 data bits (5 bytes: hum_int, hum_dec,
 //             temp_int, temp_dec, checksum)
+//
+//  The 40-bit read is wrapped in a portMUX critical section. Without it
+//  FreeRTOS task switches preempt mid-frame and corrupt the bit timing
+//  (each bit is 50 µs LOW + 26–70 µs HIGH; a single 100 µs preemption
+//  shifts every subsequent bit by one slot → checksum failures and
+//  silently wrong readings). The 20 ms start signal stays outside the
+//  critical section because a 20 ms CPU lock would brick the BLE stack.
 // ══════════════════════════════════════════════════════════════
 
+static portMUX_TYPE _dhtMux = portMUX_INITIALIZER_UNLOCKED;
+
 bool EnvManager::_readDHT11(float &tempC, float &humidity) {
-  // ── Start signal ───────────────────────────────────────────
+  // ── Start signal (long delay — outside critical section) ──
   pinMode(DHT11_PIN, OUTPUT);
   digitalWrite(DHT11_PIN, LOW);
   delay(20);                        // hold LOW ≥ 18 ms
@@ -146,46 +155,55 @@ bool EnvManager::_readDHT11(float &tempC, float &humidity) {
   delayMicroseconds(30);
   pinMode(DHT11_PIN, INPUT_PULLUP);
 
-  // ── Wait for DHT11 response (LOW 80 µs + HIGH 80 µs) ─────
+  // ── Timing-critical bit-loop (no FreeRTOS preemption allowed) ──
+  uint8_t data[5] = {0};
+  bool ok = true;
+  taskENTER_CRITICAL(&_dhtMux);
+
   unsigned long timeout;
 
   timeout = micros() + 200;
   while (digitalRead(DHT11_PIN) == HIGH) {
-    if (micros() > timeout) return false;
+    if (micros() > timeout) { ok = false; goto _dht_done; }
   }
   timeout = micros() + 100;
   while (digitalRead(DHT11_PIN) == LOW) {
-    if (micros() > timeout) return false;
+    if (micros() > timeout) { ok = false; goto _dht_done; }
   }
   timeout = micros() + 100;
   while (digitalRead(DHT11_PIN) == HIGH) {
-    if (micros() > timeout) return false;
+    if (micros() > timeout) { ok = false; goto _dht_done; }
   }
 
-  // ── Read 40 bits ───────────────────────────────────────────
-  uint8_t data[5] = {0};
   for (int i = 0; i < 40; i++) {
     // Each bit: LOW ~50 µs, then HIGH (26–28 µs = 0, 70 µs = 1)
     timeout = micros() + 80;
     while (digitalRead(DHT11_PIN) == LOW) {
-      if (micros() > timeout) return false;
+      if (micros() > timeout) { ok = false; goto _dht_done; }
     }
-
     unsigned long risingEdge = micros();
     timeout = risingEdge + 100;
     while (digitalRead(DHT11_PIN) == HIGH) {
-      if (micros() > timeout) return false;
+      if (micros() > timeout) { ok = false; goto _dht_done; }
     }
-
-    // HIGH duration > 40 µs → bit is 1
     if ((micros() - risingEdge) > 40)
       data[i / 8] |= (1 << (7 - (i % 8)));
   }
 
-  // ── Verify checksum ────────────────────────────────────────
+_dht_done:
+  taskEXIT_CRITICAL(&_dhtMux);
+  if (!ok) return false;
+
+  // ── Verify checksum (outside critical section) ────────────
   uint8_t checksum = data[0] + data[1] + data[2] + data[3];
   if (checksum != data[4]) {
-    Serial.printf("[ENV] DHT11 checksum fail: calc=%d got=%d\n", checksum, data[4]);
+    // Throttle the failure log so a noisy line doesn't flood Serial.
+    static unsigned long _lastLog = 0;
+    unsigned long now = millis();
+    if (now - _lastLog > 5000) {
+      Serial.printf("[ENV] DHT11 checksum fail: calc=%d got=%d\n", checksum, data[4]);
+      _lastLog = now;
+    }
     return false;
   }
 

@@ -1061,6 +1061,12 @@ MedVerse ships **security-capable but not security-mandatory** — auth is off b
 - ✅ **Procedural 3D vest** — fully built from Three.js primitives + procedural fabric/webbing `DataTexture` normal maps (no .glb assets); realistic stitching, centre zipper, flat webbing straps, 4 sensor styles (ECG electrode / PPG / DS18B20 / I²S mic), control module with vents + USB-C cutout.
 - ✅ Patient identity, alerts, care plans, audit log, FHIR export, handoff, doctor/patient dashboard split, register flow.
 - ✅ **ECG burst characteristic (firmware v3.3)** — dedicated BLE char `beb5483e-…-26a9` carries raw 333 Hz ECG via `EB1:`/`EB2:` compact ASCII batches; backend `handle_ecg_burst` appends per-sample and computes Lead III. Replaces the 1 Hz scalar path. Backwards-compatible — old firmware still works at 1 Hz via `L1`/`L2`/`L3` in vitals payload.
+- ✅ **Vest firmware bug-stop pass (v3.4)** — five real bugs caught in audit and fixed:
+  - MAX30102 die-temperature was refreshing every ~125 s instead of every 5 s (`_tempCounter` compared a millis-defined constant against a loop count). Replaced with a `millis()` timer.
+  - ECG R-peak detection used a hard-coded 1980 mV threshold (60% of supply) that real AD8232 signals never reach. Replaced with adaptive baseline + envelope tracker (50% of recent peak amplitude, 100 mV floor) running per-sample at 333 Hz inside `sample()` instead of at the slower `process()` cadence.
+  - DHT11 bit-banged read was preempted by FreeRTOS task switches mid-frame, corrupting bit timing. Wrapped the 40-bit loop in `taskENTER_CRITICAL` and throttled the checksum-fail log so noisy lines don't flood Serial.
+  - Audio "sound detected" used a hard-coded RMS threshold with no calibration, so the flag either fired constantly or never depending on mic DC bias. Ported the fetal_monitor's rolling-baseline pattern (16-sample window, only updates during quiet periods).
+  - `BLEManager::transmit()` was called every loop iteration (200+ Hz with mostly stale data, stealing notify slots from the ECG burst). Throttled to a dedicated 25 Hz `BLE_TX_INTERVAL` clock.
 
 ### User's to-do (not something I can do)
 
