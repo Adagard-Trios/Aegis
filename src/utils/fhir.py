@@ -296,3 +296,107 @@ def device_resource(device_name: str, serial: Optional[str] = None) -> Dict[str,
     if serial:
         data["serialNumber"] = serial
     return _validate(_FDevice if _FHIR_AVAILABLE else None, data)
+
+
+# ─── DeviceMetric (Phase 4 — IoMT standards) ────────────────────────────────
+#
+# DeviceMetric is the FHIR R4 resource for "a measurement, calculation or
+# setting capability of a device" (per-channel sample rate, units, calibration
+# timestamp). Pairs with Device — Device describes the vest, DeviceMetric
+# describes each channel the vest exposes.
+#
+# Codes use the IEEE 11073-10101 medical-device nomenclature system
+# (urn:iso:std:iso:11073:10101) so downstream EMRs can map our channels to
+# their existing device-data taxonomies. Codes below are the canonical IDs
+# from the Continua Alliance / 11073-10101 standard.
+
+IEEE_11073 = "urn:iso:std:iso:11073:10101"
+UCUM = "http://unitsofmeasure.org"
+
+# Per-channel metric metadata. Each entry carries the IEEE 11073-10101
+# code, a human label, the unit (UCUM), and the typical sample rate in Hz.
+DEVICE_METRICS: Dict[str, Dict[str, Any]] = {
+    "ppg":         {"code": "150452", "label": "PPG",                 "unit": "{count}", "hz": 40},
+    "spo2":        {"code": "150456", "label": "MDC_PULS_OXIM_SAT_O2","unit": "%",       "hz": 1},
+    "heart_rate":  {"code": "147842", "label": "MDC_ECG_HEART_RATE",  "unit": "/min",    "hz": 1},
+    "ecg":         {"code": "131329", "label": "MDC_ECG_ELEC_POTL",   "unit": "mV",      "hz": 333},
+    "breathing":   {"code": "151562", "label": "MDC_RESP_RATE",       "unit": "/min",    "hz": 1},
+    "skin_temp":   {"code": "150344", "label": "MDC_TEMP_BODY",       "unit": "Cel",     "hz": 0.2},
+    "imu_accel":   {"code": "188424", "label": "MDC_ACC",             "unit": "m/s2",    "hz": 20},
+    "imu_gyro":    {"code": "188744", "label": "MDC_AOC",             "unit": "deg/s",   "hz": 20},
+    "audio":       {"code": "188736", "label": "MDC_DEV_RESP_BREATH_SOUND", "unit": "Pa", "hz": 16000},
+    "ambient":     {"code": "150040", "label": "MDC_PRESS_BLD_NONINV","unit": "hPa",     "hz": 0.2},
+}
+
+
+def device_metric_resource(
+    channel: str,
+    *,
+    device_id: str = "aegis-vest",
+    overrides: Optional[Dict[str, Any]] = None,
+) -> Optional[Dict[str, Any]]:
+    """Build a FHIR R4 DeviceMetric for one BLE channel.
+
+    `channel` is a key in DEVICE_METRICS. `overrides` lets the caller
+    pass through runtime values (e.g. an active sample rate set by the
+    /api/telemetry/policy endpoint) — they replace the defaults.
+
+    Returns None for unknown channels rather than raising, so a caller
+    that builds the full set with a list comprehension stays simple.
+    """
+    meta = DEVICE_METRICS.get(channel)
+    if not meta:
+        return None
+    overrides = overrides or {}
+    rate_hz = float(overrides.get("hz", meta["hz"]))
+    period_us = int(1_000_000 / rate_hz) if rate_hz > 0 else 0
+    data = {
+        "resourceType": "DeviceMetric",
+        "id": f"{device_id}-{channel}",
+        "type": {
+            "coding": [{"system": IEEE_11073, "code": meta["code"], "display": meta["label"]}],
+            "text": meta["label"],
+        },
+        "unit": {
+            "coding": [{"system": UCUM, "code": meta["unit"]}],
+            "text": meta["unit"],
+        },
+        "source": {"reference": f"Device/{device_id}"},
+        "operationalStatus": "on" if rate_hz > 0 else "off",
+        "category": "measurement",
+        "measurementPeriod": {
+            "repeat": {
+                "frequency": 1,
+                "period": period_us,
+                "periodUnit": "us",
+            }
+        },
+    }
+    cal_ts = overrides.get("calibrated_at")
+    if cal_ts:
+        data["calibration"] = [{
+            "type": "gain",
+            "state": "calibrated",
+            "time": cal_ts,
+        }]
+    return data
+
+
+def device_metrics_for_vest(
+    *,
+    device_id: str = "aegis-vest",
+    rate_overrides: Optional[Dict[str, float]] = None,
+) -> List[Dict[str, Any]]:
+    """Build the canonical full set for the Aegis vest. `rate_overrides`
+    is a {channel: hz} dict letting the /api/telemetry/policy endpoint
+    surface its current settings into the DeviceMetric output."""
+    rate_overrides = rate_overrides or {}
+    out: List[Dict[str, Any]] = []
+    for ch in DEVICE_METRICS:
+        ov: Dict[str, Any] = {}
+        if ch in rate_overrides:
+            ov["hz"] = float(rate_overrides[ch])
+        m = device_metric_resource(ch, device_id=device_id, overrides=ov or None)
+        if m:
+            out.append(m)
+    return out

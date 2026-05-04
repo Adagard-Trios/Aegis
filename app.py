@@ -982,14 +982,52 @@ async def get_status():
     }
 
 
+def _apply_telemetry_policy(snapshot: dict, policy: Dict[str, Any]) -> dict:
+    """Strip / downsample channels per the active per-patient policy.
+
+    Mutates a SHALLOW COPY of the snapshot — the underlying dicts
+    aren't deep-cloned because we only set top-level keys to None,
+    never edit nested values. Cheap on the hot path.
+    """
+    if not policy:
+        return snapshot
+    out = dict(snapshot)
+    if policy.get("audio_hz") == 0:
+        out["audio"] = {"analog_rms": 0, "digital_rms": 0}
+    if policy.get("event_burst_only"):
+        # Drop the heavy waveform block when the phone signals low
+        # battery / poor signal. Keep vitals intact so alerts still fire.
+        out["waveform"] = None
+        out["imaging"] = None
+    if policy.get("ppg_hz") == 0:
+        out["ppg"] = {k: 0 for k in (out.get("ppg") or {})}
+    if policy.get("imu_hz") == 0:
+        # Zero the IMU block but keep posture flags so the dashboard
+        # can still show "no posture data" rather than crash.
+        if isinstance(out.get("imu"), dict):
+            out["imu"] = {**out["imu"], "upper_pitch": 0, "upper_roll": 0,
+                          "lower_pitch": 0, "lower_roll": 0, "spinal_angle": 0}
+    return out
+
+
 @app.get("/stream")
-async def stream_telemetry(token: Optional[str] = None, patient_id: Optional[str] = None):
+async def stream_telemetry(
+    token: Optional[str] = None,
+    patient_id: Optional[str] = None,
+    battery_pct: Optional[int] = None,
+    signal: Optional[str] = None,
+):
     """
     SSE endpoint — continuously streams telemetry as JSON events.
 
     EventSource cannot attach Authorization headers, so when
     MEDVERSE_AUTH_ENABLED=true the browser must pass the JWT via
     `?token=…`. `?patient_id=…` is honored on read-only endpoints too.
+
+    `?battery_pct=` and `?signal=` from the mobile app trigger an
+    auto-policy override: when battery is low (<20) or signal is
+    "poor", we flip the policy into event_burst_only mode for this
+    stream so we don't drain the phone faster than necessary.
     """
     # When auth is enabled, require a valid token via query string.
     if auth_enabled():
@@ -1103,6 +1141,14 @@ async def stream_telemetry(token: Optional[str] = None, patient_id: Optional[str
                     MEDICATION_SIM_TIME = 0.0
                 
                 
+            # Apply the active per-patient telemetry policy + any
+            # mobile-supplied battery / signal overrides.
+            pol = dict(_active_policy(patient_id))
+            if (battery_pct is not None and battery_pct < 20) or (signal == "poor"):
+                pol["event_burst_only"] = True
+                pol["audio_hz"] = 0
+            snapshot = _apply_telemetry_policy(snapshot, pol)
+
             yield f"data: {json.dumps(snapshot)}\n\n"
             await asyncio.sleep(0.1)  # 10 Hz update rate to frontend
 
@@ -1338,6 +1384,77 @@ async def set_cyp2d6(req: CYP2D6Request):
         )
     PATIENT_CYP2D6_STATUS = req.status
     return {"status": "success", "cyp2d6_status": PATIENT_CYP2D6_STATUS}
+
+
+# =============================================================
+# TELEMETRY POLICY — adaptive per-channel cadence (Phase 4)
+# =============================================================
+#
+# Per-patient policy controlling the SSE snapshot's per-channel sample
+# rates. The mobile app sends ?battery_pct=&signal= on /stream and the
+# clinician can override via POST /api/telemetry/policy. The snapshot
+# builder consults the active policy when emitting; channels with hz=0
+# are dropped from the payload entirely (event-burst-only mode).
+
+# {patient_id: {channel: hz}}
+TELEMETRY_POLICIES: Dict[str, Dict[str, Any]] = {}
+
+
+def _default_policy() -> Dict[str, Any]:
+    return {"ppg_hz": 40, "imu_hz": 20, "audio_hz": 16000, "event_burst_only": False}
+
+
+def _active_policy(patient_id: Optional[str]) -> Dict[str, Any]:
+    pid = patient_id or ACTIVE_PATIENT_ID
+    return TELEMETRY_POLICIES.get(pid) or _default_policy()
+
+
+class TelemetryPolicyRequest(BaseModel):
+    patient_id: Optional[str] = None
+    ppg_hz: Optional[float] = None
+    imu_hz: Optional[float] = None
+    audio_hz: Optional[float] = None
+    event_burst_only: Optional[bool] = None
+
+
+@app.get("/api/telemetry/policy")
+async def api_telemetry_policy_get(patient_id: Optional[str] = None, user=Depends(require_user)):
+    pid = _resolve_patient_id(patient_id, user)
+    return {"patient_id": pid, "policy": _active_policy(pid)}
+
+
+@app.post("/api/telemetry/policy")
+async def api_telemetry_policy_set(req: TelemetryPolicyRequest, request: Request,
+                                   user=Depends(require_user)):
+    """Update the per-channel telemetry policy for a patient. Only fields
+    you set in the body are changed — pass `audio_hz=0` to disable audio
+    streaming, `event_burst_only=true` to skip non-essential channels."""
+    pid = _resolve_patient_id(req.patient_id, user)
+    audit(request, user, "telemetry_policy", "telemetry", pid)
+    cur = TELEMETRY_POLICIES.setdefault(pid, _default_policy())
+    for k in ("ppg_hz", "imu_hz", "audio_hz", "event_burst_only"):
+        v = getattr(req, k)
+        if v is not None:
+            cur[k] = v
+    return {"status": "ok", "patient_id": pid, "policy": cur}
+
+
+@app.get("/api/fhir/DeviceMetric/latest")
+async def api_fhir_device_metric_latest(patient_id: Optional[str] = None, user=Depends(require_user)):
+    """All vest channels as FHIR R4 DeviceMetric resources, with each
+    channel's sample rate reflecting the active telemetry policy."""
+    from src.utils.fhir import device_metrics_for_vest
+    pol = _active_policy(_resolve_patient_id(patient_id, user))
+    rate_overrides: Dict[str, float] = {}
+    if pol.get("ppg_hz") is not None:
+        rate_overrides["ppg"] = float(pol["ppg_hz"])
+    if pol.get("imu_hz") is not None:
+        rate_overrides["imu_accel"] = float(pol["imu_hz"])
+        rate_overrides["imu_gyro"] = float(pol["imu_hz"])
+    if pol.get("audio_hz") is not None:
+        rate_overrides["audio"] = float(pol["audio_hz"])
+    return {"resourceType": "Bundle", "type": "collection",
+            "entry": [{"resource": m} for m in device_metrics_for_vest(rate_overrides=rate_overrides)]}
 
 
 # =============================================================
