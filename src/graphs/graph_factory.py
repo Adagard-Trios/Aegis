@@ -54,6 +54,26 @@ def _augment_with_ml_models(specialty: str, telemetry: Dict[str, Any]) -> Dict[s
                         extras["ecgfounder_classification"] = json.dumps(pred)
             except Exception:
                 pass
+        # ECG arrhythmia tabular baseline — runs even without waveforms
+        try:
+            from src.ml.ecg_arrhythmia_adapter import get_ecg_arrhythmia
+            adapter = get_ecg_arrhythmia()
+            if adapter.is_loaded:
+                pred = adapter.predict_dict(telemetry)
+                if pred is not None:
+                    extras["ecg_arrhythmia_prediction"] = json.dumps(pred)
+        except Exception:
+            pass
+        # Cardiac age regression with delta-vs-chronological
+        try:
+            from src.ml.cardiac_age_adapter import get_cardiac_age
+            adapter = get_cardiac_age()
+            if adapter.is_loaded:
+                pred = adapter.predict_with_chrono(telemetry)
+                if pred is not None:
+                    extras["cardiac_age_prediction"] = json.dumps(pred)
+        except Exception:
+            pass
 
     # ── Pulmonary ────────────────────────────────────────────────────
     if "Pulmonary" in specialty or "Respiratory" in specialty:
@@ -72,6 +92,77 @@ def _augment_with_ml_models(specialty: str, telemetry: Dict[str, Any]) -> Dict[s
                         })
             except Exception:
                 pass
+        # Patient-level lung-sound diagnostic (Healthy / COPD / Asthma / etc.)
+        try:
+            from src.ml.lung_sound_adapter import get_lung_sound
+            adapter = get_lung_sound()
+            if adapter.is_loaded:
+                pred = adapter.predict_dict(telemetry)
+                if pred is not None:
+                    extras["lung_sound_prediction"] = json.dumps(pred)
+        except Exception:
+            pass
+
+    # ── Neurology ────────────────────────────────────────────────────
+    if "Neurology" in specialty:
+        try:
+            from src.ml.stress_ans_adapter import get_stress_ans
+            adapter = get_stress_ans()
+            if adapter.is_loaded:
+                pred = adapter.predict_dict(telemetry)
+                if pred is not None:
+                    extras["stress_ans_prediction"] = json.dumps(pred)
+        except Exception:
+            pass
+        # Parkinson screener — only runs when voice features are supplied
+        # (skipped when telemetry has no voice block; the adapter returns None)
+        try:
+            from src.ml.parkinson_screener_adapter import get_parkinson_screener
+            adapter = get_parkinson_screener()
+            if adapter.is_loaded:
+                pred = adapter.predict_dict(telemetry)
+                if pred is not None:
+                    extras["parkinson_screener_prediction"] = json.dumps(pred)
+        except Exception:
+            pass
+
+    # ── Dermatology ──────────────────────────────────────────────────
+    if "Dermatology" in specialty:
+        imaging = telemetry.get("imaging") or {}
+        skin_path = (imaging.get("skin") or {}).get("image_path")
+        demographics = telemetry.get("patient") or {}
+        try:
+            from src.ml.skin_disease_adapter import get_skin_disease
+            adapter = get_skin_disease()
+            if adapter.is_loaded:
+                pred = adapter.predict_with_image(demographics, image_path=skin_path)
+                if pred is not None:
+                    extras["skin_disease_prediction"] = json.dumps(pred)
+        except Exception:
+            pass
+
+    # ── General Physician ────────────────────────────────────────────
+    if "General" in specialty:
+        # Stress / autonomic state is also relevant for the synthesiser
+        try:
+            from src.ml.stress_ans_adapter import get_stress_ans
+            adapter = get_stress_ans()
+            if adapter.is_loaded:
+                pred = adapter.predict_dict(telemetry)
+                if pred is not None:
+                    extras["stress_ans_prediction"] = json.dumps(pred)
+        except Exception:
+            pass
+        # Bowel motility — pulls from AbdomenMonitor piezo channels when present
+        try:
+            from src.ml.bowel_motility_adapter import get_bowel_motility
+            adapter = get_bowel_motility()
+            if adapter.is_loaded:
+                pred = adapter.predict_dict(telemetry)
+                if pred is not None:
+                    extras["bowel_motility_prediction"] = json.dumps(pred)
+        except Exception:
+            pass
 
     # ── Obstetrics: fetal_health + preterm_labour ────────────────────
     if "Obstetrics" in specialty or "Gynecology" in specialty:
