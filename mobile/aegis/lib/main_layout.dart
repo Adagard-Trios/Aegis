@@ -8,6 +8,7 @@ import 'screens/neurology_screen.dart';
 import 'screens/obstetrics_screen.dart';
 import 'screens/diagnostics_screen.dart';
 import 'screens/environment_screen.dart';
+import 'widgets/offline_banner.dart';
 import 'screens/settings_screen.dart';
 import 'screens/specialists_screen.dart';
 import 'screens/general_physician_screen.dart';
@@ -195,9 +196,19 @@ class _MainLayoutState extends State<MainLayout> {
           ],
         ),
       ),
-      body: AnimatedSwitcher(
-        duration: const Duration(milliseconds: 300),
-        child: _currentView,
+      body: Column(
+        children: [
+          // Phase 4 IoMT: offline banner + edge alert. Renders nothing
+          // when online + no alert active, so it doesn't add layout
+          // weight in the happy path.
+          const OfflineBanner(),
+          Expanded(
+            child: AnimatedSwitcher(
+              duration: const Duration(milliseconds: 300),
+              child: _currentView,
+            ),
+          ),
+        ],
       ),
       bottomNavigationBar: BottomNavigationBar(
         type: BottomNavigationBarType.fixed,

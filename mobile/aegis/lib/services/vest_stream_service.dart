@@ -6,20 +6,36 @@ import 'package:flutter/foundation.dart';
 import '../models/vest_data_model.dart';
 import 'api_config.dart';
 import 'auth_service.dart';
+import 'local_cache_service.dart';
+import 'edge_anomaly_service.dart';
+import 'sync_queue_service.dart';
 
 class VestStreamService {
   final VestDataModel model;
   final AuthService? auth;
+  // Phase 4 IoMT additions — optional services. Passing them in lets the
+  // app keep using VestStreamService directly when offline-mode + edge
+  // alerts aren't needed (e.g. tests, mock-data demos).
+  final LocalCacheService? cache;
+  final EdgeAnomalyService? anomaly;
+  final SyncQueueService? syncQueue;
   http.Client? _client;
   bool _isListening = false;
   int _reconnectAttempts = 0;
+  bool _wasConnected = false;
 
   // Set to true to use local 10Hz mock waveforms without connecting to the Python backend
   bool useMockData = true;
   Timer? _mockTimer;
   double _phase = 0;
 
-  VestStreamService({required this.model, this.auth});
+  VestStreamService({
+    required this.model,
+    this.auth,
+    this.cache,
+    this.anomaly,
+    this.syncQueue,
+  });
 
   String get baseUrl => ApiConfig.baseUrl;
 
@@ -94,7 +110,33 @@ class VestStreamService {
       };
 
       model.updateFromStream(mockData);
+      _onSnapshot(mockData);
     });
+  }
+
+  /// Phase 4 hook: cache the snapshot, run the edge anomaly detector,
+  /// and (when offline) enqueue for later sync. Cheap to call on the
+  /// hot path — each service is an in-memory shim.
+  void _onSnapshot(Map<String, dynamic> snapshot) {
+    cache?.push(snapshot);
+    anomaly?.ingest(snapshot);
+    if (syncQueue != null && !_wasConnected) {
+      syncQueue!.enqueue(snapshot);
+    }
+  }
+
+  /// Drain anything we cached during a disconnect. Replays each into
+  /// the local model so the UI fills in missing samples; backend-side
+  /// sync would happen here too once that path is wired.
+  Future<void> _flushSyncQueue() async {
+    if (syncQueue == null || syncQueue!.length == 0) return;
+    try {
+      await syncQueue!.flushTo((snapshot) async {
+        model.updateFromStream(snapshot);
+      });
+    } catch (e) {
+      debugPrint('sync flush partial: $e');
+    }
   }
 
   Future<void> _connect() async {
@@ -111,6 +153,11 @@ class VestStreamService {
         if (response.statusCode == 200) {
           model.updateConnectionStatus(true, 'Connected (LIVE)');
           _reconnectAttempts = 0;
+          if (!_wasConnected) {
+            // Just came back online — drain anything we queued offline.
+            _wasConnected = true;
+            _flushSyncQueue();
+          }
 
           await response.stream
               .transform(utf8.decoder)
@@ -123,6 +170,7 @@ class VestStreamService {
               try {
                 final Map<String, dynamic> data = jsonDecode(jsonStr);
                 model.updateFromStream(data);
+                _onSnapshot(data);
               } catch (e) {
                 debugPrint("JSON Parse Error: $e");
               }
@@ -134,6 +182,7 @@ class VestStreamService {
       }
 
       if (_isListening) {
+        _wasConnected = false;
         _reconnectAttempts++;
         model.updateConnectionStatus(false, 'Reconnecting ($_reconnectAttempts)...');
         final delay = (_reconnectAttempts * 1000).clamp(1000, 5000);
