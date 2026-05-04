@@ -62,6 +62,16 @@ from src.utils.auth import (
     verify_dev_credentials,
 )
 from src.utils.audit import audit
+from src.utils.consent import require_consent
+from src.utils.ledger import append_event as ledger_append
+
+# Pre-build the consent dependencies once at module import. FastAPI
+# evaluates dependencies on every request — using factory-built deps
+# avoids re-creating them per request and keeps the route signatures
+# readable.
+_require_consent_twin_sim = require_consent("twin_simulation")
+_require_consent_complex_diag = require_consent("complex_diagnosis")
+_require_consent_fhir_export = require_consent("fhir_export")
 from src.alerts.rules import evaluate as evaluate_alerts
 
 # =============================================================
@@ -1331,6 +1341,103 @@ async def set_cyp2d6(req: CYP2D6Request):
 
 
 # =============================================================
+# CONSENT — patient authorisation records (Phase 5)
+# =============================================================
+
+class ConsentGrantRequest(BaseModel):
+    patient_id: Optional[str] = None
+    consent_type: str           # "twin_simulation" | "complex_diagnosis" | "fhir_export" | "research" | ...
+    scope: Optional[Dict[str, Any]] = None
+    expires_at: Optional[str] = None     # ISO-8601, optional
+    note: Optional[str] = None
+
+
+@app.get("/api/consent")
+async def api_consent_list(
+    patient_id: Optional[str] = None,
+    include_revoked: bool = False,
+    user=Depends(require_user),
+):
+    """List consent records for the active patient. Pass include_revoked=true
+    to see historical / revoked records (useful for audit reconstruction)."""
+    from src.utils.consent import list_consents
+    pid = _resolve_patient_id(patient_id, user)
+    return {"status": "ok", "patient_id": pid, "consents": list_consents(pid, include_revoked=include_revoked)}
+
+
+@app.post("/api/consent")
+async def api_consent_grant(
+    req: ConsentGrantRequest,
+    request: Request,
+    user=Depends(require_user),
+):
+    """Grant a new consent record. Audit-logged + ledger-recorded so we
+    can later prove when a particular consent was granted, by whom,
+    with what scope."""
+    from src.utils.consent import grant_consent
+    from src.utils.ledger import append_event
+    pid = _resolve_patient_id(req.patient_id, user)
+    granted_by = str((user or {}).get("sub") or "anonymous")
+    rec = grant_consent(
+        patient_id=pid,
+        consent_type=req.consent_type,
+        scope=req.scope,
+        granted_by=granted_by,
+        expires_at=req.expires_at,
+        note=req.note,
+    )
+    audit(request, user, "consent_grant", "consent", f"{pid}:{req.consent_type}")
+    append_event(
+        "consent_grant",
+        {"id": rec["id"], "consent_type": req.consent_type, "scope": req.scope or {},
+         "expires_at": req.expires_at, "note": req.note},
+        patient_id=pid, user_id=granted_by,
+    )
+    return {"status": "ok", "consent": rec}
+
+
+@app.delete("/api/consent/{consent_id}")
+async def api_consent_revoke(consent_id: str, request: Request, user=Depends(require_user)):
+    """Revoke a consent record (non-destructive — sets revoked_at)."""
+    from src.utils.consent import revoke_consent
+    from src.utils.ledger import append_event
+    revoker = str((user or {}).get("sub") or "anonymous")
+    ok = revoke_consent(consent_id, by_user=revoker)
+    if not ok:
+        return {"status": "not_found_or_already_revoked", "consent_id": consent_id}
+    audit(request, user, "consent_revoke", "consent", consent_id)
+    append_event("consent_revoke", {"id": consent_id, "revoked_by": revoker}, user_id=revoker)
+    return {"status": "ok", "consent_id": consent_id}
+
+
+# =============================================================
+# LEDGER — append-only hash-chained event log (Phase 5)
+# =============================================================
+
+@app.get("/api/admin/ledger")
+async def api_ledger_list(
+    limit: int = 50,
+    event_type: Optional[str] = None,
+    patient_id: Optional[str] = None,
+    user=Depends(require_user),
+):
+    """Read recent ledger events (newest first). Admin-only in spirit;
+    for now uses the same require_user gate as everything else."""
+    from src.utils.ledger import get_ledger
+    return {"status": "ok",
+            "events": get_ledger().list_events(limit=int(limit), event_type=event_type, patient_id=patient_id)}
+
+
+@app.get("/api/admin/ledger/verify")
+async def api_ledger_verify(user=Depends(require_user)):
+    """Walk the ledger chain and report whether it's intact. Returns
+    `{ok: true, count: N}` on success, `{ok: false, broken_at: <seq>, ...}`
+    on the first detected tamper."""
+    from src.utils.ledger import verify_chain
+    return verify_chain()
+
+
+# =============================================================
 # DIGITAL TWIN — scenario / plan / timeline / runs (Phase 3)
 # =============================================================
 
@@ -1384,6 +1491,7 @@ async def api_twin_scenario(
     req: TwinScenarioRequest,
     request: Request,
     user=Depends(require_user),
+    _consent=Depends(_require_consent_twin_sim),
 ):
     """Project the named twin forward `horizon_min` minutes WITHOUT
     mutating its live state. `inputs` overrides the starting values
@@ -1399,15 +1507,20 @@ async def api_twin_scenario(
         step_s=int(req.step_s),
     )
     from src.modeling_simulation.twin_state_store import insert_simulation_run
+    user_id = str((user or {}).get("sub") or "anonymous")
     run_id = insert_simulation_run(
         patient_id=pid,
-        user_id=str((user or {}).get("sub") or "anonymous"),
+        user_id=user_id,
         twin=req.twin,
         kind="scenario",
         params={"inputs": req.inputs or {}, "step_s": int(req.step_s)},
         horizon_min=int(req.horizon_min),
         result=traj,
     )
+    ledger_append("simulation_run",
+                  {"run_id": run_id, "twin": req.twin, "kind": "scenario",
+                   "horizon_min": int(req.horizon_min), "params": req.inputs or {}},
+                  patient_id=pid, user_id=user_id)
     return {
         "status": "ok",
         "run_id": run_id,
@@ -1423,6 +1536,7 @@ async def api_twin_plan(
     req: TwinPlanRequest,
     request: Request,
     user=Depends(require_user),
+    _consent=Depends(_require_consent_twin_sim),
 ):
     """Like /scenario but with a treatment plan: a list of timed boluses
     that get fired into the simulation as their `t_min` is reached.
@@ -1437,9 +1551,10 @@ async def api_twin_plan(
         step_s=int(req.step_s),
     )
     from src.modeling_simulation.twin_state_store import insert_simulation_run
+    user_id = str((user or {}).get("sub") or "anonymous")
     run_id = insert_simulation_run(
         patient_id=pid,
-        user_id=str((user or {}).get("sub") or "anonymous"),
+        user_id=user_id,
         twin=req.twin,
         kind="plan",
         params={
@@ -1450,6 +1565,11 @@ async def api_twin_plan(
         horizon_min=int(req.horizon_min),
         result=traj,
     )
+    ledger_append("simulation_run",
+                  {"run_id": run_id, "twin": req.twin, "kind": "plan",
+                   "horizon_min": int(req.horizon_min),
+                   "treatment_steps": req.treatment_steps or []},
+                  patient_id=pid, user_id=user_id)
     return {
         "status": "ok",
         "run_id": run_id,
@@ -2016,6 +2136,7 @@ async def api_agent_complex_diagnosis(
     patient_id: Optional[str] = None,
     request: Request = None,  # type: ignore
     user=Depends(require_user),
+    _consent=Depends(_require_consent_complex_diag),
 ):
     """Run the collaborative diagnosis graph on the latest snapshot.
 
@@ -2079,6 +2200,22 @@ async def api_agent_complex_diagnosis(
     final_ranking = result.get("final_ranking") or []
     summary = result.get("summary_for_clinician") or ""
     next_tests = result.get("recommended_next_tests") or []
+
+    # Ledger event — high-stakes AI inference, immutable record
+    try:
+        ledger_append(
+            "complex_diagnosis",
+            {
+                "top_3": [c.get("name") for c in final_ranking[:3]],
+                "selected_specialties": result.get("selected_specialties") or [],
+                "next_tests": next_tests,
+                "trace_steps": len(result.get("traces") or []),
+            },
+            patient_id=pid,
+            user_id=str((user or {}).get("sub") or "anonymous"),
+        )
+    except Exception:
+        pass
 
     # Persist the synthesis as an interpretation row so the dashboard shows it
     if summary:

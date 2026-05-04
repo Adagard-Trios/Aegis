@@ -244,6 +244,21 @@ def expert_to_diagnostic_report(
                 "url": "http://medverse.ai/fhir/StructureDefinition/ai-confidence",
                 "valueDecimal": float(confidence),
             },
+            # Phase 5: explicit clinical-responsibility annotation. Every
+            # AI-generated DiagnosticReport carries this so downstream
+            # systems can never accidentally treat MedVerse output as a
+            # final clinician sign-off — it's decision support only.
+            {
+                "url": "http://medverse.ai/fhir/StructureDefinition/clinical-responsibility",
+                "valueString": "ai_decision_support",
+            },
+            {
+                "url": "http://medverse.ai/fhir/StructureDefinition/responsibility-disclaimer",
+                "valueString": (
+                    "AI-generated decision support. Final clinical responsibility "
+                    "rests with the attending clinician."
+                ),
+            },
         ],
     }
     return _validate(_FDiagnosticReport if _FHIR_AVAILABLE else None, data)

@@ -128,6 +128,14 @@ export function ExpertSummaryCards() {
           })}
         </div>
       )}
+
+      {/* Responsibility annotation — every AI-generated card is decision
+          support, never a final clinician sign-off. Phase 5 governance.
+          Mirrors the FHIR DiagnosticReport `clinical-responsibility`
+          extension carried in the API payload. */}
+      <p className="text-[10px] text-muted-foreground italic mt-3 px-1">
+        AI-generated decision support — final clinical responsibility rests with the attending clinician.
+      </p>
     </div>
   );
 }

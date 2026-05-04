@@ -175,6 +175,48 @@ def init_db() -> None:
             "CREATE INDEX IF NOT EXISTS ix_simruns_patient_ts "
             "ON simulation_runs(patient_id, ts DESC)"
         )
+        # ── Phase 5: consent records + append-only ledger ────────────
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS consent_records (
+                id           TEXT PRIMARY KEY,
+                patient_id   TEXT NOT NULL,
+                consent_type TEXT NOT NULL,           -- "twin_simulation" | "complex_diagnosis" | "fhir_export" | "research" | ...
+                scope        JSON,                    -- {"data": [...], "purpose": [...]}
+                granted_by   TEXT,
+                granted_at   TEXT DEFAULT CURRENT_TIMESTAMP,
+                expires_at   TEXT,
+                revoked_at   TEXT,
+                note         TEXT
+            )
+            """
+        )
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS ix_consent_patient_type "
+            "ON consent_records(patient_id, consent_type, revoked_at)"
+        )
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS ledger_events (
+                seq           INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts            TEXT DEFAULT CURRENT_TIMESTAMP,
+                event_type    TEXT NOT NULL,         -- "model_inference" | "simulation_run" | "consent_grant" | ...
+                patient_id    TEXT,
+                user_id       TEXT,
+                payload       JSON,
+                payload_hash  TEXT NOT NULL,         -- sha256(payload)
+                chain_hash    TEXT NOT NULL          -- sha256(prev_chain_hash || payload_hash)
+            )
+            """
+        )
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS ix_ledger_event_ts "
+            "ON ledger_events(event_type, ts DESC)"
+        )
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS ix_ledger_patient_ts "
+            "ON ledger_events(patient_id, ts DESC)"
+        )
         cursor.execute(
             """
             CREATE TABLE IF NOT EXISTS audit_log (
