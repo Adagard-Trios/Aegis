@@ -406,6 +406,29 @@ def handle_ble_notification(sender, data):
         audio_a = float(parts.get('ARMS', 0))
         audio_d = float(parts.get('DRMS', 0))
 
+        # Edge anomaly flag (firmware v3.9+). When the vest's on-device
+        # filter trips a band threshold (HR > 140 / HR < 40) the AL field
+        # flips to 1 and REASON carries the trigger string. We surface
+        # this directly into the alerts table so a phone-offline patient
+        # still gets a cloud-recorded alert as soon as connectivity is
+        # restored — no rules engine round-trip needed for the firmware
+        # case.
+        try:
+            edge_alert_flag = int(parts.get('AL', 0))
+            edge_alert_reason = parts.get('REASON', 'none') or 'none'
+            if edge_alert_flag and not find_recent_alert(
+                ACTIVE_PATIENT_ID, source=f"edge:{edge_alert_reason}", within_seconds=60
+            ):
+                insert_alert(
+                    patient_id=ACTIVE_PATIENT_ID,
+                    severity=8,
+                    source=f"edge:{edge_alert_reason}",
+                    message=f"Edge anomaly: {edge_alert_reason}",
+                    snapshot_json=None,
+                )
+        except Exception:
+            pass
+
         # Log firmware version once per session so we can spot vests still
         # running an old binary (no ECG burst, hard-coded R-peak threshold,
         # etc). The FW field appears in firmware v3.4+; older vests omit it

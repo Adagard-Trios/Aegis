@@ -34,7 +34,7 @@
 // ── Firmware version ──────────────────────────────────────────
 // Bumped on every flashed change so the backend can detect what payload
 // shape it's talking to (see app.py: handle_ble_notification reads `FW:`).
-#define FW_VERSION                "3.8"
+#define FW_VERSION                "3.9"
 
 // ── BLE ───────────────────────────────────────────────────────
 #define BLE_DEVICE_NAME           "Aegis_SpO2_Live"
@@ -70,6 +70,25 @@
 
 // ── ECG warmup ────────────────────────────────────────────────
 #define ECG_WARMUP_MS 10000
+
+// ── Edge anomaly filter (Phase 4 — IoMT) ──────────────────────
+// Minimal on-device threshold detector for HR + SpO2. Trips an alert
+// flag in the BLE payload (AL field) when vitals breach safety bands;
+// the phone surfaces a local notification immediately, even before
+// the cloud sees the snapshot. Set to 0 to compile out the filter.
+#ifndef EDGE_ANOMALY_ENABLED
+  #define EDGE_ANOMALY_ENABLED 1
+#endif
+
+// Safety bands — below MIN or above MAX trips the flag.
+#define ANOMALY_HR_MIN_BPM    40
+#define ANOMALY_HR_MAX_BPM    140
+#define ANOMALY_SPO2_MIN_PCT  88
+
+// Trend hysteresis: an alert must persist this many consecutive
+// loop iterations before AL flips. Avoids single-sample noise spikes
+// raising false alarms on transient PPG drops or motion artefacts.
+#define ANOMALY_PERSIST_TICKS 3
 
 // ── Logging ───────────────────────────────────────────────────
 // Levels: 0=ERR only, 1=+WARN, 2=+INFO (default), 3=+DEBUG (verbose).

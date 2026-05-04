@@ -17,7 +17,9 @@ public:
                 const TempData         &temp,
                 const ECGData          &ecg,
                 const AudioData        &audio,
-                const EnvironmentData  &env);
+                const EnvironmentData  &env,
+                bool        anomaly_fired = false,
+                const char* anomaly_reason = "none");
   // High-rate ECG burst — drains the manager's ring buffer and emits one
   // notification on the dedicated ECG characteristic. Call at ECG_BURST_INTERVAL.
   void transmitECGBurst(ECGManager &ecg);

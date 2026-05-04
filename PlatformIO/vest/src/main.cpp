@@ -8,6 +8,7 @@
 #include "ecg/ecg_manager.h"
 #include "audio/audio_manager.h"
 #include "environment/env_manager.h"
+#include "processing/anomaly_filter.h"
 
 // 10-second task watchdog — any hung blocking call (I2C, DHT11, I2S read,
 // BLE) triggers a clean reboot instead of locking the device forever.
@@ -21,6 +22,9 @@ TempManager   temp;
 ECGManager    ecg;
 AudioManager  audio;
 EnvManager    env;
+#if EDGE_ANOMALY_ENABLED
+AnomalyFilter anomaly;
+#endif
 
 SensorData      ppgData;
 PostureData     postureData;
@@ -53,8 +57,8 @@ void setup() {
   esp_task_wdt_add(NULL);
 
   Serial.println("\n========================================");
-  Serial.println("  AEGIS VEST — FULL SYSTEM v3.8         ");
-  Serial.println("  GY-87 + HW-611 + DHT11               ");
+  Serial.println("  AEGIS VEST — FULL SYSTEM v3.9         ");
+  Serial.println("  GY-87 + HW-611 + DHT11 + edge anomaly ");
   Serial.println("========================================\n");
 
   if (!sensors.begin()) {
@@ -130,7 +134,20 @@ void loop() {
   // (200+ Hz with mostly-stale data) which wasted CPU + radio + stole notify
   // slots from the ECG burst characteristic.
   if (now - lastBLETX >= BLE_TX_INTERVAL) {
-    ble.transmit(ppgData, postureData, tempData, ecgData, audioData, envData);
+    bool       al_fired  = false;
+    const char *al_reason = "none";
+#if EDGE_ANOMALY_ENABLED
+    // Edge anomaly filter — runs once per BLE TX. SpO2 isn't computed
+    // firmware-side (the backend derives it from raw PPG IRA/RedA), so
+    // we pass spo2=0 here and only HR-based alarms can fire on-device.
+    // The vest still publishes the raw PPG, so cloud-side rules cover
+    // SpO2 anomalies once connected.
+    anomaly.update((int)ecgData.heartRate, /*spo2=*/ 0);
+    al_fired = anomaly.fired();
+    al_reason = anomaly.reason();
+#endif
+    ble.transmit(ppgData, postureData, tempData, ecgData, audioData, envData,
+                 al_fired, al_reason);
     lastBLETX = now;
   }
 

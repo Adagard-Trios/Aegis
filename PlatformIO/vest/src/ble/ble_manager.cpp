@@ -53,7 +53,9 @@ void BLEManager::transmit(const SensorData       &ppg,
                            const TempData         &temp,
                            const ECGData          &ecg,
                            const AudioData        &audio,
-                           const EnvironmentData  &env) {
+                           const EnvironmentData  &env,
+                           bool        anomaly_fired,
+                           const char* anomaly_reason) {
   if (!_connected || _pChar == nullptr) return;
 
   char payload[512];
@@ -71,6 +73,10 @@ void BLEManager::transmit(const SensorData       &ppg,
     // ~333 Hz; here we keep only the derived HR + status flags.
     "EHR:%.1f,EW:%d,EV:%d,"
     "ARMS:%.0f,DRMS:%.0f,SD:%d,"
+    // AL = edge-anomaly flag set by the on-device anomaly_filter (Phase 4).
+    // REASON is one of "none|hr_high|hr_low|spo2_low" — phone uses it
+    // to fire a local notification immediately when offline.
+    "AL:%d,REASON:%s,"
     "FW:" FW_VERSION,
     ppg.ir1, ppg.red1, ppg.ir2, ppg.red2, ppg.ira, ppg.reda,
     ppg.temp1, ppg.temp2,
@@ -90,7 +96,9 @@ void BLEManager::transmit(const SensorData       &ppg,
     ecg.heartRate,
     ecg.warmingUp ? 1 : 0, ecg.valid ? 1 : 0,
     audio.analogRMS, audio.digitalRMS,
-    audio.soundDetected ? 1 : 0);
+    audio.soundDetected ? 1 : 0,
+    anomaly_fired ? 1 : 0,
+    anomaly_reason ? anomaly_reason : "none");
 
   _pChar->setValue((uint8_t*)payload, strlen(payload));
   _pChar->notify();
