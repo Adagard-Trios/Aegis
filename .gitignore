@@ -31,6 +31,16 @@ models/*/saved_models/
 models/*/logs/
 models/*/mlruns/
 
+# Phase 2 runtime weight directories — built by `python models/<slug>/export_runtime.py`,
+# checked-in adapters look here. Rebuildable, not source.
+models/cardiology/
+models/pulmonary/
+models/neurology/
+models/dermatology/
+models/obstetrics/
+models/ocular/
+models/general_physician/
+
 # Alembic-managed Postgres / Timescale credentials
 alembic.local.ini
 

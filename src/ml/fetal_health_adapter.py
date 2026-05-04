@@ -26,44 +26,60 @@ class FetalHealthAdapter(PickledTabularAdapter):
     # UCI CTG labels: 1=Normal, 2=Suspect, 3=Pathological
     LABELS = ["Normal", "Suspect", "Pathological"]
 
-    # The 22 features the UCI CTG model expects. Live telemetry doesn't
-    # carry all of them — we pass what we have and rely on the trained
-    # preprocessor's median-imputer to fill the gaps. The mapping prefers
-    # values from the live Dawes-Redman analyser when present; missing
-    # features default to None which the imputer handles.
+    # The 34 columns the trained UCI CTG model's preprocessor expects.
+    # Names are the UCI dataset's abbreviated codes — the trained
+    # Pipeline's median imputer fills any column we leave None, so we
+    # only need to supply the ones the live Dawes-Redman analyser
+    # actually computes. The morphology pattern flags (A-E, AD, DE, LD,
+    # FS) and meta-cols (SUSP, CLASS) get NaN -> median from training.
     _FEATURE_MAP = {
-        # Acceleration, contraction, movement
-        "baseline value": ("dawes_redman", "baseline_fhr"),
-        "accelerations": ("dawes_redman", "accelerations_per_min"),
-        "fetal_movement": ("fetal", "movement_count"),
-        "uterine_contractions": ("fetal", "contractions_per_min"),
-        "light_decelerations": ("dawes_redman", "light_decelerations"),
-        "severe_decelerations": ("dawes_redman", "severe_decelerations"),
-        "prolongued_decelerations": ("dawes_redman", "prolonged_decelerations"),
-        "abnormal_short_term_variability": ("dawes_redman", "abnormal_stv_pct"),
-        "mean_value_of_short_term_variability": ("dawes_redman", "stv_ms"),
-        "percentage_of_time_with_abnormal_long_term_variability": ("dawes_redman", "abnormal_ltv_pct"),
-        "mean_value_of_long_term_variability": ("dawes_redman", "ltv_ms"),
-        # Histogram features — typically derived from a 30-min CTG window
-        "histogram_width": ("dawes_redman", "hist_width"),
-        "histogram_min": ("dawes_redman", "hist_min"),
-        "histogram_max": ("dawes_redman", "hist_max"),
-        "histogram_number_of_peaks": ("dawes_redman", "hist_peaks"),
-        "histogram_number_of_zeroes": ("dawes_redman", "hist_zeroes"),
-        "histogram_mode": ("dawes_redman", "hist_mode"),
-        "histogram_mean": ("dawes_redman", "hist_mean"),
-        "histogram_median": ("dawes_redman", "hist_median"),
-        "histogram_variance": ("dawes_redman", "hist_variance"),
-        "histogram_tendency": ("dawes_redman", "hist_tendency"),
+        # Direct live values from Dawes-Redman + raw fetal block
+        "LB":   ("dawes_redman", "baseline_fhr"),
+        "LBE":  ("dawes_redman", "baseline_fhr"),    # encoded baseline; usually == LB
+        "AC":   ("dawes_redman", "accelerations_per_min"),
+        "FM":   ("fetal", "movement_count"),
+        "UC":   ("fetal", "contractions_per_min"),
+        "DL":   ("dawes_redman", "light_decelerations"),
+        "DS":   ("dawes_redman", "severe_decelerations"),
+        "DP":   ("dawes_redman", "prolonged_decelerations"),
+        "DR":   ("dawes_redman", "prolonged_decelerations"),    # rapid; aliased to prolonged
+        "ASTV": ("dawes_redman", "abnormal_stv_pct"),
+        "MSTV": ("dawes_redman", "stv_ms"),
+        "ALTV": ("dawes_redman", "abnormal_ltv_pct"),
+        "MLTV": ("dawes_redman", "ltv_ms"),
+        "Width":    ("dawes_redman", "hist_width"),
+        "Min":      ("dawes_redman", "hist_min"),
+        "Max":      ("dawes_redman", "hist_max"),
+        "Nmax":     ("dawes_redman", "hist_peaks"),
+        "Nzeros":   ("dawes_redman", "hist_zeroes"),
+        "Mode":     ("dawes_redman", "hist_mode"),
+        "Mean":     ("dawes_redman", "hist_mean"),
+        "Median":   ("dawes_redman", "hist_median"),
+        "Variance": ("dawes_redman", "hist_variance"),
+        "Tendency": ("dawes_redman", "hist_tendency"),
+        # Pattern morphology flags + class labels — the live analyser
+        # doesn't compute these. Mapped to None so the trained imputer
+        # fills them with the training median (acts as a "no opinion"
+        # marker for these auxiliary features).
+        "A":  (None, None), "B":  (None, None), "C":  (None, None),
+        "D":  (None, None), "E":  (None, None), "AD": (None, None),
+        "DE": (None, None), "LD": (None, None), "FS": (None, None),
+        "SUSP":  (None, None), "CLASS": (None, None),
     }
 
     def _to_feature_row(self, input_dict: Dict[str, Any]) -> Dict[str, Any]:
-        """Build a feature dict from telemetry. `input_dict` is the
-        snapshot's `fetal` block — a mix of dawes_redman + raw fetal fields."""
+        """Build a feature dict matching the trained UCI CTG column set.
+        `input_dict` is the snapshot's `fetal` block — a mix of
+        `dawes_redman` + raw fetal fields. Columns we can't derive
+        live (pattern flags, meta-cols) are passed as None so the
+        trained median-imputer covers them."""
         if not input_dict:
             return {}
         row: Dict[str, Any] = {}
         for col, (group, key) in self._FEATURE_MAP.items():
+            if group is None:
+                row[col] = None
+                continue
             sub = input_dict.get(group) if isinstance(input_dict.get(group), dict) else None
             row[col] = sub.get(key) if sub else input_dict.get(key)
         return row

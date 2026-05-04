@@ -133,15 +133,50 @@ class PickledTabularAdapter:
         # Single-row input → scalar output
         first = pred[0] if hasattr(pred, "__len__") and len(pred) > 0 else pred
 
-        if self.LABELS and isinstance(first, (int, np.integer)) and 0 <= int(first) < len(self.LABELS):
-            out["label"] = self.LABELS[int(first)]
-            out["class_index"] = int(first)
-        elif isinstance(first, (int, np.integer, str)):
-            out["label"] = str(first)
-        else:
-            # Regression result
-            out["value"] = float(first)
-            out["label"] = f"{float(first):.2f}"
+        # Some sklearn pipelines return numpy.float64 for integer-valued
+        # classification targets (e.g. UCI CTG NSP encoded as 1.0/2.0/3.0).
+        # Resolve the LABELS slot via the model's `classes_` attribute when
+        # available — that's the canonical map from prediction value to
+        # label index, regardless of whether the dataset is 0- or 1-indexed.
+        is_numeric = isinstance(first, (int, float, np.integer, np.floating))
+        is_intish = is_numeric and abs(float(first) - round(float(first))) < 1e-6
+
+        if self.LABELS and is_numeric and hasattr(self._model, "classes_"):
+            try:
+                classes = list(self._model.classes_)
+                # Find the predicted value's index in classes_ — that's
+                # the same index into LABELS the trained model uses.
+                cidx = next(
+                    (i for i, c in enumerate(classes)
+                     if abs(float(c) - float(first)) < 1e-6),
+                    None,
+                )
+                if cidx is not None and 0 <= cidx < len(self.LABELS):
+                    out["label"] = self.LABELS[cidx]
+                    out["class_index"] = cidx
+            except Exception:
+                pass
+
+        if "label" not in out:
+            if self.LABELS and is_intish:
+                # Fallback for models without classes_ (rare). Try 1-indexed
+                # first since UCI conventions skew that way; fall back to
+                # 0-indexed.
+                idx = int(round(float(first)))
+                if 1 <= idx <= len(self.LABELS):
+                    out["label"] = self.LABELS[idx - 1]
+                    out["class_index"] = idx - 1
+                elif 0 <= idx < len(self.LABELS):
+                    out["label"] = self.LABELS[idx]
+                    out["class_index"] = idx
+                else:
+                    out["label"] = str(idx)
+            elif isinstance(first, (int, np.integer, str)):
+                out["label"] = str(first)
+            else:
+                # Regression result
+                out["value"] = float(first)
+                out["label"] = f"{float(first):.2f}"
 
         if hasattr(self._model, "predict_proba"):
             try:

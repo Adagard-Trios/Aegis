@@ -1151,6 +1151,29 @@ The plan in `~/.claude/plans/do-these-or-don-t-staged-newt.md` (collaborative di
   Smoke-tested end-to-end (TestClient): with `MEDVERSE_CONSENT_REQUIRED=true`, `/digital-twin/scenario` returns 403 → `POST /api/consent` succeeds → 200 on retry → ledger has `consent_grant` + `simulation_run` events with `verify_chain ok=true count=2` → `DELETE /api/consent/<id>` → next call 403 again. Tamper test: manually mutating a stored `payload` makes `verify_chain` return `ok=false, broken_at=<seq>` with mismatched `payload_hash` values.
 - ✅ **Phase 1.6 of agentic upgrade — selective specialty fan-out via planner** — patient_graph used to invoke ALL 6 specialty experts in parallel for every snapshot, regardless of vitals. Now there's a `planning_node` between `orchestrator` and the experts that runs the same rule-based gating used by `complex_diagnosis_graph` (one source of truth — `planner_node` in `src/nodes/complex_diagnosis_node.py`). The planner inspects HR / SpO₂ / RR / HRV + IMU biomarkers + fetal-monitor activity and writes `selected_specialties` to state; a LangGraph `add_conditional_edges` from `planning_node` then routes only to the matching expert nodes. Default for empty / missing-data snapshots: `[Cardiology + General Physician]` so the graph never deadlocks on an empty fan-out. General-physician fan-in works unchanged because LangGraph waits only on actually-invoked predecessors. Result: ~2–5× fewer Groq LLM calls per run on typical baseline snapshots, plus a tighter reasoning trace. `PatientWorkflowState` gains `selected_specialties`, `planner_rationale`, and a `traces: Annotated[list, operator.add]` accumulator; `_invoke_specialty_graph()` propagates each subgraph's `traces` upward so the unified UI sees one continuous chain of reasoning across the whole patient run. Also fixed a planner edge case where missing-vital sentinel zeros (firmware default) tripped bradycardia/bradypnea rules — the planner now uses `None`-aware comparisons so missing fields never trigger a specialty.
 
+### Activating ML pipelines at runtime
+
+The 11 runtime adapters from Phase 2 are scaffold + degrade-gracefully by default — `is_loaded` returns `False` until the corresponding pipeline has been trained and its weights exported to the runtime path. To turn one on:
+
+```bash
+# Train (downloads dataset, fits the sklearn baseline, writes artifacts/<ts>/.../model.pkl)
+cd models/fetal_health && python main.py
+# Export — extracts preprocessor + sklearn model into a plain dict at the runtime path
+python export_runtime.py
+# Verify — adapter should now report is_loaded=True
+python -c "from src.ml.fetal_health_adapter import get_fetal_health; print(get_fetal_health().is_loaded)"
+```
+
+**Confirmed-active in this checkout** (verified 2026-05-05):
+
+| Adapter | Status | Notes |
+|---|---|---|
+| `fetal_health` (`models/obstetrics/fetal_health/model.pkl`) | ✅ active | UCI CTG, 3-class; flows into the **Obstetrics** specialty graph as `fetal_health_prediction` in tool_results. Tested across Normal / Suspect / Pathological synthetic CTGs. |
+| `parkinson_screener` (`models/neurology/parkinson_screener/model.pkl`) | ✅ active | UCI Parkinsons voice features, 2-class; flows into **Neurology** when telemetry carries a `voice_features` block. Tested on healthy + parkinsonian synthetic voice profiles. |
+| Others (9 remaining) | ⬜ scaffold | Run their `models/<slug>/main.py && python export_runtime.py` to activate. |
+
+The runtime weight directories (`models/<domain>/`) are gitignored — built locally per environment.
+
 ### User's to-do (not something I can do)
 
 - **Reflash the vest** with current firmware to get the 333 Hz ECG burst path (`pio run -t upload` from [PlatformIO/vest/](PlatformIO/vest/)). Until reflashed, the vest stays on the 1 Hz scalar path and the backend logs `Optional char ... unavailable`.
