@@ -11,7 +11,8 @@
         "dermatology_graph": "src/graphs/dermatology_graph.py:graph",
         "gynecology_graph": "src/graphs/gynecology_graph.py:graph",
         "ocular_graph": "src/graphs/ocular_graph.py:graph",
-        "general_physician_graph": "src/graphs/general_physician_graph.py:graph"
+        "general_physician_graph": "src/graphs/general_physician_graph.py:graph",
+        "complex_diagnosis_graph": "src/graphs/complex_diagnosis_graph.py:graph"
     },
     "env": ".env"
 }

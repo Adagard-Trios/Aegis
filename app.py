@@ -1659,6 +1659,111 @@ async def api_agent_run_now(
 
 
 # =============================================================
+# COLLABORATIVE DIAGNOSIS (Phase 1 of agentic upgrade)
+# =============================================================
+
+@app.post("/api/agent/complex-diagnosis")
+async def api_agent_complex_diagnosis(
+    patient_id: Optional[str] = None,
+    request: Request = None,  # type: ignore
+    user=Depends(require_user),
+):
+    """Run the collaborative diagnosis graph on the latest snapshot.
+
+    Returns ranked candidate diagnoses, recommended next tests, a
+    clinician-facing narrative, and the full reasoning trace (every node's
+    inputs/outputs/confidence). The trace powers the new "Reasoning trace"
+    tab on the /diagnostics page so the differential is auditable.
+
+    The graph runs synchronously — typical end-to-end latency is 5-15 s
+    depending on Groq queueing for the four LLM calls (proposer, background,
+    skeptic, diagnosis). Heavy KB/Chroma init happens once per process.
+    """
+    pid = _resolve_patient_id(patient_id, user)
+    audit(request, user, "complex_diagnosis", "agent", pid)
+
+    snapshot = get_latest_telemetry(patient_id=pid) or build_telemetry_snapshot()
+    fhir_history: list = []
+    try:
+        # Lightweight history context — latest interpretation per specialty.
+        # The diagnosis nodes use this only as background; the absence of it
+        # doesn't change the graph's outputs, just narrows the LLM's prior.
+        latest_by_spec = get_latest_interpretations(patient_id=pid) or {}
+        fhir_history = [
+            {"specialty": spec, "findings": entry.get("findings"),
+             "severity": entry.get("severity"), "ts": entry.get("ts")}
+            for spec, entry in latest_by_spec.items()
+            if isinstance(entry, dict) and entry.get("findings")
+        ]
+    except Exception:
+        fhir_history = []
+
+    try:
+        from src.graphs.complex_diagnosis_graph import graph as complex_graph
+    except Exception as e:
+        return {"status": "graph_unavailable", "error": str(e)}
+
+    initial_state = {
+        "patient_id": pid,
+        "sensor_telemetry": snapshot or {},
+        "fhir_history": fhir_history,
+        "ml_outputs": {},
+        "candidates": [],
+        "specialty_findings": [],
+        "traces": [],
+        "messages": [],
+    }
+
+    try:
+        result = complex_graph.invoke(initial_state)
+    except Exception as e:
+        logging.getLogger(__name__).error(f"complex_diagnosis run failed: {e}")
+        return {"status": "error", "error": str(e), "patient_id": pid}
+
+    final_ranking = result.get("final_ranking") or []
+    summary = result.get("summary_for_clinician") or ""
+    next_tests = result.get("recommended_next_tests") or []
+
+    # Persist the synthesis as an interpretation row so the dashboard shows it
+    if summary:
+        try:
+            top_names = ", ".join(c.get("name", "") for c in final_ranking[:3])
+            persisted_text = (
+                f"COLLABORATIVE DIAGNOSIS\n"
+                f"Top candidates: {top_names}\n"
+                f"Recommended tests: {', '.join(next_tests)}\n\n"
+                f"{summary}"
+            )
+            sev = "normal"
+            sev_score = 0.0
+            if final_ranking:
+                top_score = float(final_ranking[0].get("score") or 0)
+                sev_score = round(top_score * 10, 1)
+                sev = "critical" if top_score >= 0.75 else "warning" if top_score >= 0.5 else "normal"
+            insert_interpretation(
+                specialty="Collaborative Diagnosis",
+                findings=persisted_text,
+                severity=sev,
+                severity_score=sev_score,
+                patient_id=pid,
+            )
+        except Exception as e:
+            logging.getLogger(__name__).warning(f"complex_diagnosis persist failed: {e}")
+
+    return {
+        "status": "ok",
+        "patient_id": pid,
+        "selected_specialties": result.get("selected_specialties") or [],
+        "planner_rationale": result.get("planner_rationale") or "",
+        "candidates": result.get("candidates") or [],
+        "final_ranking": final_ranking,
+        "recommended_next_tests": next_tests,
+        "summary_for_clinician": summary,
+        "traces": result.get("traces") or [],
+    }
+
+
+# =============================================================
 # AUDIT (Phase 8)
 # =============================================================
 
