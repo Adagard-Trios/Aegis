@@ -372,6 +372,30 @@ export function runComplexDiagnosis(patient_id?: string) {
   return apiPost<ComplexDiagnosisResponse>(`/api/agent/complex-diagnosis?${qs}`, {});
 }
 
+// ─── Image upload (Phase 2.A: feeds retina / skin runtime adapters) ─
+
+export interface UploadImageResponse {
+  status: string;
+  patient_id?: string;
+  modality?: string;
+  image_path?: string;
+  filename?: string;
+  size_bytes?: number;
+  error?: string;
+}
+
+export async function uploadImage(
+  file: File,
+  modality: "retinal" | "skin",
+  patient_id?: string,
+): Promise<UploadImageResponse> {
+  const form = new FormData();
+  form.append("file", file);
+  const qs = new URLSearchParams({ modality });
+  if (patient_id) qs.set("patient_id", patient_id);
+  return apiPostForm<UploadImageResponse>(`/api/upload-image?${qs}`, form);
+}
+
 // ─── Care plans (Phase 6) ─────────────────────────────────────────
 
 export interface CarePlan {

@@ -22,47 +22,107 @@ from src.utils.db import insert_interpretation
 
 def _augment_with_ml_models(specialty: str, telemetry: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Attach structured-model outputs (ECGFounder, respiratory CNN, …) to the
-    tool_results dict when the relevant adapter has weights loaded and the
-    telemetry snapshot carries a raw waveform.
+    Attach structured-model outputs (ECGFounder, respiratory CNN, fetal
+    health, retinal classifiers, …) to the tool_results dict when the
+    relevant adapter has weights loaded and the telemetry snapshot
+    carries the inputs the adapter needs.
 
     Returns a dict of extra {tool_name: json_string} entries — empty when
-    no adapters are ready.
+    no adapters are ready or no relevant inputs are present.
+
+    Each branch gates on (a) specialty match, (b) adapter.is_loaded, and
+    (c) snapshot contains the right modality data. Each adapter call is
+    wrapped in try/except so a single broken weight file can never break
+    the whole graph run.
     """
     extras: Dict[str, str] = {}
-    waveform = (telemetry or {}).get("waveform") or {}
-    if not waveform:
-        return extras
+    telemetry = telemetry or {}
+    waveform = telemetry.get("waveform") or {}
 
     import numpy as np
 
+    # ── Cardiology ───────────────────────────────────────────────────
     if "Cardiology" in specialty:
-        try:
-            from src.ml.ecgfounder_adapter import get_ecgfounder
-            adapter = get_ecgfounder()
-            if adapter.is_loaded and waveform.get("ecg_lead2"):
-                signal = np.asarray(waveform["ecg_lead2"], dtype=float)
-                pred = adapter.classify(signal, fs=waveform.get("fs", 40))
-                if pred is not None:
-                    extras["ecgfounder_classification"] = json.dumps(pred)
-        except Exception:
-            pass
+        if waveform:
+            try:
+                from src.ml.ecgfounder_adapter import get_ecgfounder
+                adapter = get_ecgfounder()
+                if adapter.is_loaded and waveform.get("ecg_lead2"):
+                    signal = np.asarray(waveform["ecg_lead2"], dtype=float)
+                    pred = adapter.classify(signal, fs=waveform.get("fs", 40))
+                    if pred is not None:
+                        extras["ecgfounder_classification"] = json.dumps(pred)
+            except Exception:
+                pass
 
+    # ── Pulmonary ────────────────────────────────────────────────────
     if "Pulmonary" in specialty or "Respiratory" in specialty:
-        try:
-            from src.ml.pulmonary_classifier import get_pulmonary_classifier
-            clf = get_pulmonary_classifier()
-            if clf.is_loaded and waveform.get("audio"):
-                audio = np.asarray(waveform["audio"], dtype=float)
-                pred = clf.predict(audio, fs=waveform.get("fs", 40))
-                if pred is not None:
-                    extras["respiratory_cnn_classification"] = json.dumps({
-                        "label": pred.label,
-                        "probs": pred.probs,
-                        "confidence": pred.confidence,
+        if waveform:
+            try:
+                from src.ml.pulmonary_classifier import get_pulmonary_classifier
+                clf = get_pulmonary_classifier()
+                if clf.is_loaded and waveform.get("audio"):
+                    audio = np.asarray(waveform["audio"], dtype=float)
+                    pred = clf.predict(audio, fs=waveform.get("fs", 40))
+                    if pred is not None:
+                        extras["respiratory_cnn_classification"] = json.dumps({
+                            "label": pred.label,
+                            "probs": pred.probs,
+                            "confidence": pred.confidence,
+                        })
+            except Exception:
+                pass
+
+    # ── Obstetrics: fetal_health + preterm_labour ────────────────────
+    if "Obstetrics" in specialty or "Gynecology" in specialty:
+        fetal_block = telemetry.get("fetal") or {}
+        if fetal_block:
+            try:
+                from src.ml.fetal_health_adapter import get_fetal_health
+                adapter = get_fetal_health()
+                if adapter.is_loaded:
+                    pred = adapter.predict_dict(fetal_block)
+                    if pred is not None:
+                        extras["fetal_health_prediction"] = json.dumps(pred)
+            except Exception:
+                pass
+            try:
+                from src.ml.preterm_labour_adapter import get_preterm_labour
+                adapter = get_preterm_labour()
+                if adapter.is_loaded:
+                    pred = adapter.predict_dict({
+                        "fetal": fetal_block,
+                        "patient": telemetry.get("patient") or {},
                     })
-        except Exception:
-            pass
+                    if pred is not None:
+                        extras["preterm_labour_prediction"] = json.dumps(pred)
+            except Exception:
+                pass
+
+    # ── Ocular: retinal_disease + retinal_age ────────────────────────
+    if "Ocular" in specialty or "Ocul" in specialty:
+        imaging = telemetry.get("imaging") or {}
+        retinal_path = (imaging.get("retinal") or {}).get("image_path")
+        demographics = telemetry.get("patient") or {}
+        if demographics or retinal_path:
+            try:
+                from src.ml.retinal_disease_adapter import get_retinal_disease
+                adapter = get_retinal_disease()
+                if adapter.is_loaded:
+                    pred = adapter.predict_with_image(demographics, image_path=retinal_path)
+                    if pred is not None:
+                        extras["retinal_disease_prediction"] = json.dumps(pred)
+            except Exception:
+                pass
+            try:
+                from src.ml.retinal_age_adapter import get_retinal_age
+                adapter = get_retinal_age()
+                if adapter.is_loaded:
+                    pred = adapter.predict_with_image(demographics, image_path=retinal_path)
+                    if pred is not None:
+                        extras["retinal_age_prediction"] = json.dumps(pred)
+            except Exception:
+                pass
 
     return extras
 

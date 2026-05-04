@@ -880,6 +880,15 @@ def build_telemetry_snapshot() -> dict:
                 fs=SAMPLE_RATE,
             ),
             "waveform": waveform_block,
+            # Latest uploaded imaging (retinal/skin). Gated behind
+            # MEDVERSE_INCLUDE_IMAGING because the path strings cause an
+            # SSE-payload widening for every snapshot when always on. The
+            # complex-diagnosis route always splices it in regardless.
+            "imaging": (
+                _latest_imaging_for(ACTIVE_PATIENT_ID)
+                if _os.environ.get("MEDVERSE_INCLUDE_IMAGING", "false").lower() in ("1", "true", "yes")
+                else None
+            ),
         }
 
 
@@ -1420,6 +1429,88 @@ async def upload_lab_results(file: UploadFile = File(...)):
     return {"status": "success", "extracted_data": {"AST": 142, "ALT": 160, "CYP2D6": "Poor Metabolizer"}}
 
 
+# ─── Image upload (Phase 2.A: feeds the retina/skin runtime adapters) ───
+
+UPLOAD_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "uploads"))
+_VALID_IMAGE_MODALITIES = {"retinal", "skin"}
+_VALID_IMAGE_EXTS = {".png", ".jpg", ".jpeg"}
+
+
+def _latest_imaging_for(patient_id: str) -> Dict[str, Any]:
+    """Return the most-recent uploaded image of each modality for the
+    patient, shaped as `{retinal: {image_path, uploaded_at}, skin: {...}}`.
+
+    Used by the snapshot builder + the complex-diagnosis route to surface
+    paths to the ocular / dermatology adapters. Empty dict when nothing
+    has been uploaded yet for this patient or the uploads/ tree is missing.
+    """
+    out: Dict[str, Any] = {}
+    patient_dir = os.path.join(UPLOAD_ROOT, patient_id or "_default")
+    if not os.path.isdir(patient_dir):
+        return out
+    for modality in _VALID_IMAGE_MODALITIES:
+        modality_dir = os.path.join(patient_dir, modality)
+        if not os.path.isdir(modality_dir):
+            continue
+        files = [f for f in os.listdir(modality_dir)
+                 if os.path.splitext(f)[1].lower() in _VALID_IMAGE_EXTS]
+        if not files:
+            continue
+        files.sort()
+        latest_name = files[-1]   # filenames are timestamp-prefixed → lexical = chrono
+        latest_path = os.path.join(modality_dir, latest_name)
+        out[modality] = {
+            "image_path": latest_path,
+            "uploaded_at": int(os.path.getmtime(latest_path)),
+            "filename": latest_name,
+        }
+    return out
+
+
+@app.post("/api/upload-image")
+async def upload_image(
+    file: UploadFile = File(...),
+    modality: str = "retinal",
+    patient_id: Optional[str] = None,
+    request: Request = None,    # type: ignore
+    user=Depends(require_user),
+):
+    """Persist an uploaded image (retinal fundus / skin lesion) so the
+    ocular + dermatology runtime adapters can find it on the next graph
+    invocation.
+
+    The file is saved to `uploads/<patient_id>/<modality>/<ts>.<ext>`
+    and surfaces in subsequent snapshots under `imaging.<modality>` when
+    `MEDVERSE_INCLUDE_IMAGING=true` (or unconditionally on the
+    complex-diagnosis route, which always splices in the latest image).
+    """
+    if modality not in _VALID_IMAGE_MODALITIES:
+        return {"status": "error", "error": f"invalid modality '{modality}' (use: retinal | skin)"}
+    ext = os.path.splitext(file.filename or "")[1].lower()
+    if ext not in _VALID_IMAGE_EXTS:
+        return {"status": "error", "error": f"unsupported extension '{ext}' (use: png | jpg | jpeg)"}
+
+    pid = _resolve_patient_id(patient_id, user)
+    audit(request, user, "upload_image", "imaging", f"{pid}:{modality}")
+
+    target_dir = os.path.join(UPLOAD_ROOT, pid, modality)
+    os.makedirs(target_dir, exist_ok=True)
+    ts = int(time.time())
+    safe_name = f"{ts}_{int(time.time() * 1000) % 1000:03d}{ext}"
+    target_path = os.path.join(target_dir, safe_name)
+
+    content = await file.read()
+    with open(target_path, "wb") as fh:
+        fh.write(content)
+
+    return {
+        "status": "ok",
+        "patient_id": pid,
+        "modality": modality,
+        "image_path": target_path,
+        "filename": safe_name,
+        "size_bytes": len(content),
+    }
 
 
 @app.get("/health")
@@ -1683,6 +1774,13 @@ async def api_agent_complex_diagnosis(
     audit(request, user, "complex_diagnosis", "agent", pid)
 
     snapshot = get_latest_telemetry(patient_id=pid) or build_telemetry_snapshot()
+    # Splice in any uploaded imaging for this patient so the ocular adapters
+    # see the most recent fundus / skin images
+    try:
+        snapshot = dict(snapshot or {})
+        snapshot["imaging"] = _latest_imaging_for(pid)
+    except Exception:
+        pass
     fhir_history: list = []
     try:
         # Lightweight history context — latest interpretation per specialty.

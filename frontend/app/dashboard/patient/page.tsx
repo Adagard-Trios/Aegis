@@ -9,7 +9,9 @@ import {
 } from "lucide-react";
 import { useVestStream } from "../../hooks/useVestStream";
 import { useAuth } from "../../hooks/useAuth";
+import { useActivePatient } from "../../hooks/useActivePatient";
 import { fetchAlerts, type Alert } from "../../lib/api";
+import ImageUploadWidget from "../../components/ImageUploadWidget";
 
 function VitalTile({
   label, value, unit, icon: Icon, color, normal,
@@ -47,6 +49,7 @@ export default function PatientDashboard() {
   const { data, connected } = useVestStream();
   const { me, logout } = useAuth();
   const router = useRouter();
+  const { patientId } = useActivePatient();
   const [alerts, setAlerts] = useState<Alert[]>([]);
   const [activeTab, setActiveTab] = useState<"health" | "alerts" | "history" | "reports">("health");
 
@@ -199,6 +202,9 @@ export default function PatientDashboard() {
                 <p className="text-xs text-muted-foreground mt-2">Ensure the vest sensors are in firm contact with skin.</p>
               </div>
             </div>
+
+            {/* Image upload — feeds the retina + skin runtime adapters */}
+            <ImageUploadWidget patientId={patientId} />
           </div>
         )}
 
