@@ -1034,6 +1034,10 @@ MedVerse ships **security-capable but not security-mandatory** — auth is off b
 
 ## Roadmap
 
+### Agentic upgrade plan — **all 5 phases shipped** (2026-05-04)
+
+The plan in `~/.claude/plans/do-these-or-don-t-staged-newt.md` (collaborative diagnosis, runtime ML adapters, digital-twin platformisation, IoMT/edge resilience, security & governance) is complete end-to-end. ~15 commits, ~3 600 LOC added across backend / firmware / mobile / frontend, every change additive (legacy paths still work, new behaviour gated on env flags or `is_loaded` checks). Phases below are listed reverse-chronological in **Done**; deferred items live in the original plan's "Out of scope" section and are not on the current roadmap.
+
 ### Done
 
 - ✅ Two-compartment Bateman PK/PD with CYP2D6-aware clearance.
