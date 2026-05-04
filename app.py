@@ -12,7 +12,7 @@ import random
 import time
 import threading
 from collections import deque
-from typing import AsyncGenerator, Optional
+from typing import Any, AsyncGenerator, Dict, List, Optional
 from contextlib import asynccontextmanager
 
 # Load .env before anything else reads os.environ — CORS allowlist, auth
@@ -1108,7 +1108,10 @@ async def stream_telemetry(token: Optional[str] = None, patient_id: Optional[str
 
 
 def sqlite_writer_loop():
-    """Periodically persist the current telemetry snapshot AND evaluate alert rules."""
+    """Periodically persist the current telemetry snapshot, evaluate alert
+    rules, advance the digital twins, and persist twin snapshots so the
+    /api/digital-twin/timeline endpoint has real history to chart."""
+    twin_tick_counter = 0
     while True:
         snapshot = build_telemetry_snapshot()
         try:
@@ -1119,6 +1122,37 @@ def sqlite_writer_loop():
             evaluate_and_persist_alerts(snapshot, ACTIVE_PATIENT_ID)
         except Exception as e:
             logging.getLogger(__name__).error(f"alert evaluation failed: {e}")
+
+        # ── Phase 3: advance the digital twins on the same 1 Hz cadence ──
+        # tick() is cheap (float math + small bolus list); we persist a
+        # snapshot every 10th iteration so twin_snapshots grows at 0.1 Hz.
+        try:
+            from src.modeling_simulation.cardiac_twin import get_cardiac_twin
+            from src.modeling_simulation.maternal_fetal_twin import get_maternal_fetal_twin
+            from src.modeling_simulation.twin_state_store import write_twin_snapshot
+
+            # Forward the live PK/PD bolus to the twins on the *first* tick
+            # only (subsequent ticks just advance elapsed_h).
+            drug_inputs = []
+            if SIMULATED_MEDICATION and MEDICATION_SIM_TIME == 0.0:
+                drug_inputs = [{"drug": SIMULATED_MEDICATION, "dose_mg": SIMULATED_MEDICATION_DOSE}]
+
+            ct = get_cardiac_twin(ACTIVE_PATIENT_ID)
+            ct.set_cyp2d6(PATIENT_CYP2D6_STATUS)
+            cs = ct.tick(1.0, drug_inputs=drug_inputs)
+
+            mft = get_maternal_fetal_twin(ACTIVE_PATIENT_ID)
+            mft.set_cyp2d6(PATIENT_CYP2D6_STATUS)
+            ms = mft.tick(1.0, drug_inputs=drug_inputs)
+
+            twin_tick_counter += 1
+            if twin_tick_counter >= 10:    # 0.1 Hz persistence
+                write_twin_snapshot(ACTIVE_PATIENT_ID, "cardiac", cs)
+                write_twin_snapshot(ACTIVE_PATIENT_ID, "maternal_fetal", ms)
+                twin_tick_counter = 0
+        except Exception as e:
+            logging.getLogger(__name__).debug(f"twin tick skipped: {e}")
+
         time.sleep(1.0)
 
 
@@ -1294,6 +1328,230 @@ async def set_cyp2d6(req: CYP2D6Request):
         )
     PATIENT_CYP2D6_STATUS = req.status
     return {"status": "success", "cyp2d6_status": PATIENT_CYP2D6_STATUS}
+
+
+# =============================================================
+# DIGITAL TWIN — scenario / plan / timeline / runs (Phase 3)
+# =============================================================
+
+# Map twin string -> (singleton-getter, current_state-getter). Centralised
+# so the routes below stay symmetric across the cardiac and maternal-fetal
+# twins; adding a new organ twin is one entry here.
+def _twin_factories():
+    from src.modeling_simulation.cardiac_twin import get_cardiac_twin
+    from src.modeling_simulation.maternal_fetal_twin import get_maternal_fetal_twin
+    return {
+        "cardiac": get_cardiac_twin,
+        "maternal_fetal": get_maternal_fetal_twin,
+    }
+
+
+def _resolve_twin(twin: str, patient_id: str):
+    factories = _twin_factories()
+    if twin not in factories:
+        from fastapi import HTTPException, status as _status
+        raise HTTPException(
+            status_code=_status.HTTP_400_BAD_REQUEST,
+            detail=f"twin must be one of {sorted(factories)}",
+        )
+    return factories[twin](patient_id)
+
+
+def _trajectory_to_payload(traj):
+    """Compact JSON-friendly form: list of {t_s, state} dicts."""
+    return [{"t_s": float(t), "state": s} for (t, s) in traj]
+
+
+class TwinScenarioRequest(BaseModel):
+    twin: str = "cardiac"           # "cardiac" | "maternal_fetal"
+    patient_id: Optional[str] = None
+    inputs: Optional[Dict[str, Any]] = None     # starting overrides
+    horizon_min: int = 60
+    step_s: int = 60
+
+
+class TwinPlanRequest(BaseModel):
+    twin: str = "cardiac"
+    patient_id: Optional[str] = None
+    inputs: Optional[Dict[str, Any]] = None
+    treatment_steps: List[Dict[str, Any]] = []  # [{t_min, drug, dose_mg}]
+    horizon_min: int = 60
+    step_s: int = 60
+
+
+@app.post("/api/digital-twin/scenario")
+async def api_twin_scenario(
+    req: TwinScenarioRequest,
+    request: Request,
+    user=Depends(require_user),
+):
+    """Project the named twin forward `horizon_min` minutes WITHOUT
+    mutating its live state. `inputs` overrides the starting values
+    (e.g. {hr_bpm: 130} to model a what-if tachycardia baseline).
+    Persists the run + returns the trajectory for charting."""
+    pid = _resolve_patient_id(req.patient_id, user)
+    audit(request, user, "twin_scenario", "digital_twin", f"{pid}:{req.twin}")
+    twin_inst = _resolve_twin(req.twin, pid)
+    traj = twin_inst.simulate(
+        scenario_inputs=req.inputs or {},
+        treatment_steps=None,
+        horizon_min=int(req.horizon_min),
+        step_s=int(req.step_s),
+    )
+    from src.modeling_simulation.twin_state_store import insert_simulation_run
+    run_id = insert_simulation_run(
+        patient_id=pid,
+        user_id=str((user or {}).get("sub") or "anonymous"),
+        twin=req.twin,
+        kind="scenario",
+        params={"inputs": req.inputs or {}, "step_s": int(req.step_s)},
+        horizon_min=int(req.horizon_min),
+        result=traj,
+    )
+    return {
+        "status": "ok",
+        "run_id": run_id,
+        "twin": req.twin,
+        "patient_id": pid,
+        "horizon_min": req.horizon_min,
+        "trajectory": _trajectory_to_payload(traj),
+    }
+
+
+@app.post("/api/digital-twin/plan")
+async def api_twin_plan(
+    req: TwinPlanRequest,
+    request: Request,
+    user=Depends(require_user),
+):
+    """Like /scenario but with a treatment plan: a list of timed boluses
+    that get fired into the simulation as their `t_min` is reached.
+    Returns the predicted vital trajectory."""
+    pid = _resolve_patient_id(req.patient_id, user)
+    audit(request, user, "twin_plan", "digital_twin", f"{pid}:{req.twin}")
+    twin_inst = _resolve_twin(req.twin, pid)
+    traj = twin_inst.simulate(
+        scenario_inputs=req.inputs or {},
+        treatment_steps=req.treatment_steps or [],
+        horizon_min=int(req.horizon_min),
+        step_s=int(req.step_s),
+    )
+    from src.modeling_simulation.twin_state_store import insert_simulation_run
+    run_id = insert_simulation_run(
+        patient_id=pid,
+        user_id=str((user or {}).get("sub") or "anonymous"),
+        twin=req.twin,
+        kind="plan",
+        params={
+            "inputs": req.inputs or {},
+            "treatment_steps": req.treatment_steps or [],
+            "step_s": int(req.step_s),
+        },
+        horizon_min=int(req.horizon_min),
+        result=traj,
+    )
+    return {
+        "status": "ok",
+        "run_id": run_id,
+        "twin": req.twin,
+        "patient_id": pid,
+        "horizon_min": req.horizon_min,
+        "trajectory": _trajectory_to_payload(traj),
+    }
+
+
+@app.get("/api/digital-twin/timeline")
+async def api_twin_timeline(
+    twin: str = "cardiac",
+    patient_id: Optional[str] = None,
+    from_ts: Optional[float] = None,
+    to_ts: Optional[float] = None,
+    limit: int = 1000,
+    user=Depends(require_user),
+):
+    """Return historical twin states for the time-slider. Bounded by
+    [from_ts, to_ts] when supplied (epoch seconds), most recent `limit`
+    entries otherwise."""
+    pid = _resolve_patient_id(patient_id, user)
+    if twin not in _twin_factories():
+        return {"status": "error", "error": f"twin must be one of {sorted(_twin_factories())}"}
+    from src.modeling_simulation.twin_state_store import read_twin_timeline
+    rows = read_twin_timeline(pid, twin, from_ts=from_ts, to_ts=to_ts, limit=int(limit))
+    return {
+        "status": "ok",
+        "twin": twin,
+        "patient_id": pid,
+        "count": len(rows),
+        "states": [{"ts": ts, "state": s} for (ts, s) in rows],
+    }
+
+
+@app.get("/api/digital-twin/runs")
+async def api_twin_runs(
+    patient_id: Optional[str] = None,
+    limit: int = 50,
+    user=Depends(require_user),
+):
+    """List recent what-if runs for the patient (without trajectory
+    payload — fetch full result via /runs/<run_id>)."""
+    pid = _resolve_patient_id(patient_id, user)
+    from src.modeling_simulation.twin_state_store import list_simulation_runs
+    return {
+        "status": "ok",
+        "patient_id": pid,
+        "runs": list_simulation_runs(pid, limit=int(limit)),
+    }
+
+
+@app.get("/api/digital-twin/runs/{run_id}")
+async def api_twin_run_detail(run_id: str, user=Depends(require_user)):
+    from src.modeling_simulation.twin_state_store import get_simulation_run
+    run = get_simulation_run(run_id)
+    if run is None:
+        return {"status": "not_found", "run_id": run_id}
+    return {"status": "ok", "run": run}
+
+
+@app.post("/api/digital-twin/runs/{run_id}/replay")
+async def api_twin_run_replay(run_id: str, request: Request, user=Depends(require_user)):
+    """Re-execute a stored scenario / plan with the SAME params and
+    persist a new run. Useful for sensitivity analysis (e.g. flip
+    CYP2D6 status before replay) — the new run gets a fresh ID so the
+    original is preserved."""
+    from src.modeling_simulation.twin_state_store import get_simulation_run, insert_simulation_run
+    src_run = get_simulation_run(run_id)
+    if src_run is None:
+        return {"status": "not_found", "run_id": run_id}
+
+    pid = src_run.get("patient_id") or _resolve_patient_id(None, user)
+    twin = src_run.get("twin") or "cardiac"
+    audit(request, user, "twin_replay", "digital_twin", f"{pid}:{twin}:{run_id}")
+
+    twin_inst = _resolve_twin(twin, pid)
+    params = src_run.get("params") or {}
+    horizon = int(src_run.get("horizon_min") or 60)
+    traj = twin_inst.simulate(
+        scenario_inputs=params.get("inputs") or {},
+        treatment_steps=params.get("treatment_steps") or None,
+        horizon_min=horizon,
+        step_s=int(params.get("step_s") or 60),
+    )
+    new_id = insert_simulation_run(
+        patient_id=pid,
+        user_id=str((user or {}).get("sub") or "anonymous"),
+        twin=twin,
+        kind="replay",
+        params={**params, "replays_run_id": run_id},
+        horizon_min=horizon,
+        result=traj,
+    )
+    return {
+        "status": "ok",
+        "replays": run_id,
+        "new_run_id": new_id,
+        "trajectory": _trajectory_to_payload(traj),
+    }
+
 
 import base64
 from groq import Groq
