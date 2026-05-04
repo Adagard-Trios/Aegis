@@ -150,7 +150,7 @@ the relevant specialist graph through
 |---|---|
 | Cardiology Expert | `predict_ecg_arrhythmia`, `predict_cardiac_age`, `predict_ecg_biometric` |
 | Pulmonology Expert | `predict_lung_sound` |
-| Neurology Expert | `predict_parkinson`, `predict_stress_ans` |
+| Neurology Expert | `predict_parkinson` |
 | Dermatology Expert | `predict_skin_disease` |
 | Obstetrics Expert | `predict_fetal_health`, `predict_preterm_labour` |
 | Ocular Expert | `predict_retinal_disease`, `predict_retinal_age` |

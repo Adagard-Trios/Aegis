@@ -105,15 +105,6 @@ def _augment_with_ml_models(specialty: str, telemetry: Dict[str, Any]) -> Dict[s
 
     # ── Neurology ────────────────────────────────────────────────────
     if "Neurology" in specialty:
-        try:
-            from src.ml.stress_ans_adapter import get_stress_ans
-            adapter = get_stress_ans()
-            if adapter.is_loaded:
-                pred = adapter.predict_dict(telemetry)
-                if pred is not None:
-                    extras["stress_ans_prediction"] = json.dumps(pred)
-        except Exception:
-            pass
         # Parkinson screener — only runs when voice features are supplied
         # (skipped when telemetry has no voice block; the adapter returns None)
         try:
@@ -138,29 +129,6 @@ def _augment_with_ml_models(specialty: str, telemetry: Dict[str, Any]) -> Dict[s
                 pred = adapter.predict_with_image(demographics, image_path=skin_path)
                 if pred is not None:
                     extras["skin_disease_prediction"] = json.dumps(pred)
-        except Exception:
-            pass
-
-    # ── General Physician ────────────────────────────────────────────
-    if "General" in specialty:
-        # Stress / autonomic state is also relevant for the synthesiser
-        try:
-            from src.ml.stress_ans_adapter import get_stress_ans
-            adapter = get_stress_ans()
-            if adapter.is_loaded:
-                pred = adapter.predict_dict(telemetry)
-                if pred is not None:
-                    extras["stress_ans_prediction"] = json.dumps(pred)
-        except Exception:
-            pass
-        # Bowel motility — pulls from AbdomenMonitor piezo channels when present
-        try:
-            from src.ml.bowel_motility_adapter import get_bowel_motility
-            adapter = get_bowel_motility()
-            if adapter.is_loaded:
-                pred = adapter.predict_dict(telemetry)
-                if pred is not None:
-                    extras["bowel_motility_prediction"] = json.dumps(pred)
         except Exception:
             pass
 

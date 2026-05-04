@@ -61,7 +61,7 @@ The same telemetry stream drives a Next.js 16 dashboard — with a 3D React-Thre
 - **FHIR R4 interoperability** — telemetry serialized as LOINC-coded `Observation` / `Bundle` resources, expert findings as `DiagnosticReport` resources — drop-in compatible with hospital EMRs.
 - **Feature-flagged JWT auth** + environment-driven CORS allowlist; enable without changing frontend ports.
 - **IMU-derived clinical biomarkers** — tremor-band FFT, gait symmetry, POTS detection, activity classification — all from sensors already on the vest.
-- **ML adapter scaffolding** — ECGFounder (10.7M-ECG foundation model), ICBHI respiratory-sound CNN, ECG-biometric Siamese network — plug in weights and the cardiology/pulmonary graphs upgrade from "LLM-only" to structured-model-grounded.
+- **Twelve trainable ML pipelines + ten runtime adapters** — pipelines under [`models/<slug>/`](models/) cover ECG arrhythmia (PTB-XL), cardiac age, ECG biometric (Siamese), lung sound (ICBHI), Parkinson screener (UCI Parkinsons + WearGait-PD), fetal health (UCI CTG), preterm labour (TPEHGDB), skin disease (HAM10000), retinal disease + age (ODIR-5K + RETFound). Each has a runtime adapter under [src/ml/](src/ml/) (or [src/biometric/](src/biometric/) for the identity Siamese) that the matching specialty graph consumes through `_augment_with_ml_models()` — Cardiology / Pulmonary / Neurology / Dermatology / Obstetrics / Ocular all upgrade from "LLM-only" to structured-model-grounded as soon as you train + export each pipeline. Two synthetic-data pipelines (`stress_ans`, `bowel_motility`) ship as trainable scaffolds only, with no runtime adapters — see Phase 2.B notes.
 - **Federated learning skeleton** (Flower) — train across patients without their raw biometrics ever leaving their device.
 - **TimescaleDB-ready migration** (`alembic upgrade head`) — hypertables + continuous aggregates for the `/history` route.
 - **Temporal "what-if" scrubbing** — switch the stream between `Live`, `6h`, `12h`, `24h`, `2w`, `4w` projections.
@@ -649,7 +649,9 @@ Each specialty expert loads: a clinical knowledge base from [src/knowledge/](src
 
 ## ML model adapters
 
-Runtime wrappers under [src/ml/](src/ml/) let the cardiology and pulmonary LangGraph nodes **narrate** structured model output instead of classifying from text alone. Every adapter is a singleton with a uniform `is_loaded` / `classify` / `embed` surface, and every adapter gracefully no-ops when weights are absent — the graphs keep running either way.
+Runtime wrappers under [src/ml/](src/ml/) let every specialty LangGraph node **narrate** structured model output instead of classifying from text alone. Every adapter is a singleton with a uniform `is_loaded` / `predict_dict` / `predict_with_image` surface, and every adapter gracefully no-ops when weights are absent — the graphs keep running either way. Adapters fall into two groups:
+
+**Legacy waveform adapters** (signal-in, structured-out — predate Phase 2):
 
 | Adapter                                                                          | Weights path (relative to `MEDVERSE_MODELS_DIR`) | Graph integration point |
 |----------------------------------------------------------------------------------|--------------------------------------------------|-------------------------|
@@ -657,9 +659,25 @@ Runtime wrappers under [src/ml/](src/ml/) let the cardiology and pulmonary LangG
 | [`RespiratorySoundClassifier`](src/ml/pulmonary_classifier.py)                   | `pulmonary/icbhi_cnn/weights.pt` + `class_names.json` | `pulmonary_graph` info-retrieval |
 | [`ECGBiometric`](src/biometric/ecg_biometric.py)                                 | `ecg/biometric_siamese/weights.pt`               | (see [ECG biometric identity](#ecg-biometric-identity)) |
 
+**Phase 2 pipeline adapters** (built on the shared [`PickledTabularAdapter`](src/ml/_pickle_adapter.py) base — train via `models/<slug>/main.py`, export via `models/<slug>/export_runtime.py`):
+
+| Adapter                                                                          | Weights path (relative to `MEDVERSE_MODELS_DIR`) | Specialty graph |
+|----------------------------------------------------------------------------------|--------------------------------------------------|-----------------|
+| [`fetal_health_adapter.py`](src/ml/fetal_health_adapter.py)                      | `obstetrics/fetal_health/model.pkl`              | Obstetrics      |
+| [`preterm_labour_adapter.py`](src/ml/preterm_labour_adapter.py)                  | `obstetrics/preterm_labour/model.pkl`            | Obstetrics      |
+| [`retinal_disease_adapter.py`](src/ml/retinal_disease_adapter.py)                | `ocular/retinal_disease/model.pkl`               | Ocular          |
+| [`retinal_age_adapter.py`](src/ml/retinal_age_adapter.py)                        | `ocular/retinal_age/model.pkl`                   | Ocular          |
+| [`ecg_arrhythmia_adapter.py`](src/ml/ecg_arrhythmia_adapter.py)                  | `cardiology/ecg_arrhythmia/model.pkl`            | Cardiology      |
+| [`cardiac_age_adapter.py`](src/ml/cardiac_age_adapter.py)                        | `cardiology/cardiac_age/model.pkl`               | Cardiology      |
+| [`lung_sound_adapter.py`](src/ml/lung_sound_adapter.py)                          | `pulmonary/lung_sound/model.pkl`                 | Pulmonary       |
+| [`parkinson_screener_adapter.py`](src/ml/parkinson_screener_adapter.py)          | `neurology/parkinson_screener/model.pkl`         | Neurology       |
+| [`skin_disease_adapter.py`](src/ml/skin_disease_adapter.py)                      | `dermatology/skin_disease/model.pkl`             | Dermatology     |
+
+The synthetic-only `stress_ans` and `bowel_motility` pipelines (under `models/<slug>/`) are **trainable but unwired** — no runtime adapter, no graph_factory branch — because their training distributions don't transfer to live BLE telemetry. See the [Activating ML pipelines at runtime](#activating-ml-pipelines-at-runtime) section.
+
 ### How graphs consume adapter output
 
-`_augment_with_ml_models()` in [src/graphs/graph_factory.py](src/graphs/graph_factory.py) runs after the normal tool pass. When the adapter is loaded **and** the snapshot carries a `waveform` block (enable with `MEDVERSE_INCLUDE_WAVEFORM=true`), it attaches a structured result to `tool_results`:
+`_augment_with_ml_models()` in [src/graphs/graph_factory.py](src/graphs/graph_factory.py) runs after the normal tool pass. Each branch gates on (a) specialty match, (b) `adapter.is_loaded`, and (c) snapshot contains the right modality data. Each adapter call is wrapped in `try/except` so a single broken weight file can never break the whole graph run. Loaded adapters attach a structured result to `tool_results`:
 
 ```jsonc
 // tool_results entry from the cardiology graph
@@ -668,13 +686,21 @@ Runtime wrappers under [src/ml/](src/ml/) let the cardiology and pulmonary LangG
   "auroc": 0.97,
   "top_k": [{"label": "AF", "prob": 0.91}, ...]
 }
+
+// tool_results entry from the obstetrics graph
+"fetal_health_prediction": {
+  "label": "Suspect",
+  "class_index": 1,
+  "probs": {"Normal": 0.31, "Suspect": 0.62, "Pathological": 0.07},
+  "confidence": 0.62
+}
 ```
 
 The LLM then narrates this structured classification rather than inferring it from raw signal — a triply-sourced output (signal → classifier → LLM narration) that is clinically defensible.
 
 ### Plugging in weights
 
-Each adapter file contains a `_load_weights()` method with a `NotImplementedError` — drop in your PyTorch / TFLite / ONNX load call there, or override the singleton at runtime. See the inline docstrings for the expected I/O shape (1-D ECG window, mel-spectrogram audio window, Siamese anchor embedding).
+The legacy adapters' `_load_weights()` methods raise `NotImplementedError` — drop in your PyTorch / TFLite / ONNX load call there, or override the singleton at runtime. See the inline docstrings for the expected I/O shape (1-D ECG window, mel-spectrogram audio window, Siamese anchor embedding). The Phase 2 pipeline adapters auto-load whatever `models/<slug>/export_runtime.py` writes — see the [activation walk-through](#activating-ml-pipelines-at-runtime) below for the train → export → verify loop.
 
 ## Federated learning
 
@@ -933,8 +959,8 @@ models/
 | `fetal_health`      | classify     | UCI CTG (+ CTU-UHB) | UCI XLS + PhysioNet `ctu-uhb-ctgdb` | none (CTU behind `MEDVERSE_FETCH_LARGE`) | UCI ✅; CTU gated |
 | `preterm_labour`    | classify     | TPEHGDB + TPEHGT (~500 MB) | PhysioNet                       | none                   | ✅ on first run |
 | `lung_sound`        | classify     | ICBHI 2017 (~600 MB) | direct ZIP mirror (Kaggle fallback) | none (Kaggle optional)| ✅ on first run |
-| `bowel_motility`    | classify     | synthetic        | local generator from notebook         | none                   | ✅ always synthetic |
-| `stress_ans`        | classify     | synthetic / WESAD | local generator (or `WESAD_ROOT`)    | email reg for real WESAD | ✅ synthetic by default |
+| `bowel_motility` ⛔ | classify     | synthetic        | local generator from notebook         | none                   | ✅ always synthetic — **no runtime adapter** (trainable scaffold only) |
+| `stress_ans` ⛔     | classify     | synthetic / WESAD | local generator (or `WESAD_ROOT`)    | email reg for real WESAD | ✅ synthetic by default — **no runtime adapter** (trainable scaffold only) |
 | `ecg_arrhythmia`    | classify     | PTB-XL (~25 GB)  | PhysioNet `ptb-xl/1.0.3`              | none                   | gated by `MEDVERSE_FETCH_LARGE` |
 | `cardiac_age`       | regress      | PTB-XL + PTB (~32 GB) | PhysioNet                        | none                   | gated by `MEDVERSE_FETCH_LARGE` |
 | `skin_disease`      | classify     | HAM10000 (+ ISIC) | Kaggle `kmader/skin-cancer-mnist-ham10000` | `KAGGLE_USERNAME` + `KAGGLE_KEY` | HAM10000 with creds; ISIC gated by `MEDVERSE_FETCH_LARGE` |
@@ -983,9 +1009,13 @@ python train_all.py --timeout 600 --results train_all_results.json
 
 Per-pipeline `data_ingestion.py` files use marker-file checks (e.g. `ptbxl_database.csv` for PTB-XL, ≥70 `Person_*` dirs for ECG-ID, ≥250 `.hea` files for TPEHGDB) so partial caches are never treated as complete.
 
-### Runtime adapters (legacy)
+### Runtime adapters
 
-Pre-existing adapters in [src/ml/](src/ml/) and [src/biometric/](src/biometric/) (`ECGFounderAdapter`, `RespiratorySoundClassifier`, `ECGBiometric`) report `is_loaded = False` until weights land under `MEDVERSE_MODELS_DIR`; the graphs fall back to LLM-only assessment. The 12 pipelines above produce sklearn baselines today; swapping each one for the production architecture from its source notebook is a per-pipeline `_build_model` override.
+The 12 pipelines above produce sklearn baselines today; swapping each one for the production architecture from its source notebook is a per-pipeline `_build_model` override.
+
+- The 10 clinically-grounded pipelines have a runtime adapter — 9 Phase 2 sklearn pickle adapters under [`src/ml/`](src/ml/) (`fetal_health`, `preterm_labour`, `retinal_disease`, `retinal_age`, `ecg_arrhythmia`, `cardiac_age`, `lung_sound`, `parkinson_screener`, `skin_disease`) plus the legacy Siamese `ecg_biometric` under [`src/biometric/`](src/biometric/). Activate any sklearn pipeline via `cd models/<slug> && python main.py && python export_runtime.py` — see [Activating ML pipelines at runtime](#activating-ml-pipelines-at-runtime).
+- The 2 synthetic-only pipelines (`stress_ans`, `bowel_motility`) have **no runtime adapter** — they remain trainable for research but are not wired into `_augment_with_ml_models`. See Phase 2.B notes for the rationale.
+- The pre-existing legacy adapters (`ECGFounderAdapter`, `RespiratorySoundClassifier`, `ECGBiometric`) report `is_loaded = False` until weights land at the documented `MEDVERSE_MODELS_DIR` paths; the graphs fall back to LLM-only assessment.
 
 ## Development notes
 
@@ -1114,16 +1144,16 @@ The plan in `~/.claude/plans/do-these-or-don-t-staged-newt.md` (collaborative di
   Each pipeline gains an `export_runtime.py` (e.g. [`models/fetal_health/export_runtime.py`](models/fetal_health/export_runtime.py)) that loads the latest trained `ModelEstimator` from `artifacts/<ts>/`, extracts the sklearn-native preprocessor + model into a plain dict, and writes it to `${MEDVERSE_MODELS_DIR}/<domain>/<slug>/model.pkl` where the runtime adapter looks for it. This avoids the cross-pipeline `src.` namespace collision that prevents direct unpickling. [`graph_factory._augment_with_ml_models()`](src/graphs/graph_factory.py) now has obstetrics + ocular branches that gate on `adapter.is_loaded` and attach `fetal_health_prediction`, `preterm_labour_prediction`, `retinal_disease_prediction`, `retinal_age_prediction` to `tool_results` as JSON. New utility [`src/utils/image_loader.py`](src/utils/image_loader.py) (lazy-PIL, ImageNet-style normalisation) is in place for the upcoming image-aware model upgrade.
   
   New endpoint `POST /api/upload-image?modality=retinal|skin&patient_id=...` persists uploads to `uploads/<patient>/<modality>/<ts>.png` and surfaces the latest image of each modality on the snapshot under `imaging.{retinal,skin}.image_path` (gated by `MEDVERSE_INCLUDE_IMAGING=true` for the SSE stream; the complex-diagnosis route always splices it in). New frontend [`ImageUploadWidget.tsx`](frontend/app/components/ImageUploadWidget.tsx) mounted on `/dashboard/patient` provides PNG/JPG upload (10 MB cap) for both modalities. All adapters return `None` on missing weights — the graph runs unchanged on a fresh install with no trained weights anywhere.
-- ✅ **Phase 2.B of agentic upgrade — remaining 7 runtime ML adapters (cardiology / pulmonary / neurology / dermatology / GI)** — completes the pipeline-to-runtime bridge for every model under `models/<slug>/`:
+- ✅ **Phase 2.B of agentic upgrade — remaining runtime ML adapters (cardiology / pulmonary / neurology / dermatology)** — completes the pipeline-to-runtime bridge for every clinically-grounded model under `models/<slug>/`:
   - [`ecg_arrhythmia_adapter.py`](src/ml/ecg_arrhythmia_adapter.py) — PTB-XL 5-class super-classes (NORM/MI/STTC/CD/HYP); runs alongside ECGFounderAdapter so the cardiology LLM gets two independent classifiers
   - [`cardiac_age_adapter.py`](src/ml/cardiac_age_adapter.py) — biological cardiac age regression with delta-vs-chronological computation (positive delta → accelerated cardiac aging flag), mirrors `retinal_age` shape
-  - [`stress_ans_adapter.py`](src/ml/stress_ans_adapter.py) — WESAD-style 3-class autonomic state (baseline/stress/amusement); consumed by both Neurology and General Physician graphs
   - [`lung_sound_adapter.py`](src/ml/lung_sound_adapter.py) — ICBHI patient-level diagnostic (Healthy/COPD/Asthma/etc); derives RMS + ZCR + percentile features from the audio waveform when available
   - [`parkinson_screener_adapter.py`](src/ml/parkinson_screener_adapter.py) — UCI Parkinsons voice-feature 22-dim classifier; cleanly skips when no voice features are supplied (vest doesn't capture voice — runtime usage is from a separate voice upload)
-  - [`bowel_motility_adapter.py`](src/ml/bowel_motility_adapter.py) — 4-channel acoustic 3-class (quiet/normal/hyperactive); pulls from AbdomenMonitor piezo channels when present, falls back to vest mic
   - [`skin_disease_adapter.py`](src/ml/skin_disease_adapter.py) — HAM10000 7-class dermatoscopic classifier (akiec/bcc/bkl/df/mel/nv/vasc); same `predict_with_image` contract as the retina adapters
   
-  Each pipeline gains an `export_runtime.py` (e.g. [`models/ecg_arrhythmia/export_runtime.py`](models/ecg_arrhythmia/export_runtime.py) — same template as Phase 2.A). [`graph_factory._augment_with_ml_models()`](src/graphs/graph_factory.py) extended with the new specialty branches: cardiology now has 3 adapter calls (ECGFounder + ecg_arrhythmia + cardiac_age), pulmonary 2 (RespCNN + lung_sound), neurology 2 (stress_ans + parkinson_screener), dermatology 1 (skin_disease via uploaded skin image), GP 2 (stress_ans + bowel_motility). All branches gate on `adapter.is_loaded` and a try/except so a single bad weight file can't break a graph run. With no weights anywhere, all branches emit empty `extras` and the graphs run identically to before — the upgrade is fully additive.
+  **Synthetic-data pipelines deliberately not wired to runtime**: `stress_ans` (WESAD-style synthetic generator with mis-learned label assignment) and `bowel_motility` (synthetic z-scored acoustic features that single-tick BLE telemetry can't reproduce) remain trainable under `models/<slug>/` for research / experimentation, but have **no** runtime adapters and are **not** in `_augment_with_ml_models` — their predictions on real telemetry are unreliable enough that surfacing them to LLM experts would be net-negative. Re-activate them only after retraining on real-world clinical data with a windowed feature pipeline.
+  
+  Each pipeline gains an `export_runtime.py` (e.g. [`models/ecg_arrhythmia/export_runtime.py`](models/ecg_arrhythmia/export_runtime.py) — same template as Phase 2.A). [`graph_factory._augment_with_ml_models()`](src/graphs/graph_factory.py) extended with the new specialty branches: cardiology now has 3 adapter calls (ECGFounder + ecg_arrhythmia + cardiac_age), pulmonary 2 (RespCNN + lung_sound), neurology 1 (parkinson_screener), dermatology 1 (skin_disease via uploaded skin image). All branches gate on `adapter.is_loaded` and a try/except so a single bad weight file can't break a graph run. With no weights anywhere, all branches emit empty `extras` and the graphs run identically to before — the upgrade is fully additive.
 - ✅ **Phase 3 of agentic upgrade — digital-twin platformisation** — turned the existing 3D dashboard into a stateful digital twin with simulation + replay. New package [`src/modeling_simulation/`](src/modeling_simulation/) with three modules:
   - [`_bateman.py`](src/modeling_simulation/_bateman.py) — centralised PK/PD primitives (k_abs / k_el / Bateman effect curve / HR delta / contractions threshold). Constants intentionally match what `app.py` already uses inline so live and what-if produce identical numbers
   - [`cardiac_twin.py`](src/modeling_simulation/cardiac_twin.py) — per-patient cardiac state (HR baseline, HRV, active boluses + elapsed_h, CYP2D6 modifier). `tick(dt_s)` advances the state for the live SSE loop; `simulate(scenario_inputs, treatment_steps, horizon_min)` always works on a *clone* so what-ifs can't mutate the live timeline. Auto-prunes washed-out boluses
@@ -1153,7 +1183,7 @@ The plan in `~/.claude/plans/do-these-or-don-t-staged-newt.md` (collaborative di
 
 ### Activating ML pipelines at runtime
 
-The 11 runtime adapters from Phase 2 are scaffold + degrade-gracefully by default — `is_loaded` returns `False` until the corresponding pipeline has been trained and its weights exported to the runtime path. To turn one on:
+The 9 runtime adapters from Phase 2 are scaffold + degrade-gracefully by default — `is_loaded` returns `False` until the corresponding pipeline has been trained and its weights exported to the runtime path. (The `stress_ans` and `bowel_motility` pipelines under `models/<slug>/` are deliberately *not* wired to runtime — they train on synthetic data whose distribution our live BLE telemetry can't reproduce, so their predictions on real input are unreliable. See Phase 2.B notes above.) To turn one on:
 
 ```bash
 # Train (downloads dataset, fits the sklearn baseline, writes artifacts/<ts>/.../model.pkl)
@@ -1170,7 +1200,8 @@ python -c "from src.ml.fetal_health_adapter import get_fetal_health; print(get_f
 |---|---|---|
 | `fetal_health` (`models/obstetrics/fetal_health/model.pkl`) | ✅ active | UCI CTG, 3-class; flows into the **Obstetrics** specialty graph as `fetal_health_prediction` in tool_results. Tested across Normal / Suspect / Pathological synthetic CTGs. |
 | `parkinson_screener` (`models/neurology/parkinson_screener/model.pkl`) | ✅ active | UCI Parkinsons voice features, 2-class; flows into **Neurology** when telemetry carries a `voice_features` block. Tested on healthy + parkinsonian synthetic voice profiles. |
-| Others (9 remaining) | ⬜ scaffold | Run their `models/<slug>/main.py && python export_runtime.py` to activate. |
+| Others (7 remaining) | ⬜ scaffold | Run their `models/<slug>/main.py && python export_runtime.py` to activate. |
+| `stress_ans`, `bowel_motility` | ⛔ excluded | Synthetic-data-only pipelines — no runtime adapters. Predictions on real telemetry are unreliable; do not re-wire without retraining on real clinical data first. |
 
 The runtime weight directories (`models/<domain>/`) are gitignored — built locally per environment.
 

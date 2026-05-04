@@ -94,13 +94,6 @@ def _features_for(slug: str, snapshot: Dict[str, Any]) -> Optional[Dict[str, Any
             "lead2": e.get("lead2"),
             "lead3": e.get("lead3"),
         }
-    if slug == "stress_ans":
-        return {
-            "heart_rate": v.get("heart_rate"),
-            "hrv_rmssd": v.get("hrv_rmssd"),
-            "breathing_rate": v.get("breathing_rate"),
-            "spo2": v.get("spo2"),
-        }
     if slug == "lung_sound":
         return {
             "spo2": v.get("spo2"),
@@ -136,13 +129,6 @@ def _features_for(slug: str, snapshot: Dict[str, Any]) -> Optional[Dict[str, Any
             "kicks": sum(1 for k in (fetal.get("kicks") or []) if k),
             "maternal_hr": v.get("heart_rate"),
             "maternal_temp": temp.get("cervical"),
-        }
-    if slug == "bowel_motility":
-        return {
-            "audio_analog": audio.get("analog_rms"),
-            "audio_digital": audio.get("digital_rms"),
-            "imu_pitch": imu.get("upper_pitch"),
-            "imu_roll": imu.get("upper_roll"),
         }
     if slug == "skin_disease":
         return {
@@ -240,13 +226,6 @@ predict_ecg_biometric = make_model_tool(
     "Returns the matched-identity confidence. Use to verify the wearer.",
 )
 
-predict_stress_ans = make_model_tool(
-    "stress_ans",
-    "predict_stress_ans",
-    "Classify autonomic nervous system stress state (low / moderate / high) "
-    "from HR, HRV, and breathing rate.",
-)
-
 predict_lung_sound = make_model_tool(
     "lung_sound",
     "predict_lung_sound",
@@ -273,13 +252,6 @@ predict_preterm_labour = make_model_tool(
     "predict_preterm_labour",
     "Estimate the probability of preterm labour from contraction frequency, "
     "kicks, and maternal vitals.",
-)
-
-predict_bowel_motility = make_model_tool(
-    "bowel_motility",
-    "predict_bowel_motility",
-    "Classify bowel / GI motility state from acoustic + IMU signals on the "
-    "abdomen monitor.",
 )
 
 predict_skin_disease = make_model_tool(
@@ -317,7 +289,6 @@ SPECIALTY_MODEL_TOOLS: Dict[str, List[Any]] = {
     ],
     "Neurology Expert": [
         predict_parkinson,
-        predict_stress_ans,
     ],
     "Dermatology Expert": [
         predict_skin_disease,
