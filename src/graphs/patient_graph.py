@@ -2,6 +2,29 @@
 src/graphs/patient_graph.py
 
 Patient-facing LangGraph workflow using individual specialty subgraphs.
+
+Topology (Phase 1.6 — selective fan-out):
+
+    START
+      → patient_information_fetcher
+      → sync_initialization
+        ↓ (parallel split)
+      ├→ continuous_monitoring → audience_aware_compiler
+      └→ orchestrator
+           ↓
+         planning_node              ← rule-based gating
+           ↓ (conditional fan-out)
+         [cardiology|pulmonary|neurology|dermatology|gyno|ocular]_expert
+           ↓ (fan-in — only the selected ones contribute)
+         general_physician
+           ↓
+         audience_aware_compiler → END / loop
+
+Previously orchestrator → ALL 6 experts unconditionally. The planner
+inspects `continuous_monitoring_data` and writes `selected_specialties`
+to state; the conditional edge routes to only those specialty nodes.
+General Physician fan-in still works because LangGraph waits only on
+the actually-invoked predecessors.
 """
 from langgraph.graph import StateGraph, START, END
 
@@ -11,6 +34,8 @@ from src.nodes.patient_node import (
     sync_initialization,
     continuous_monitoring,
     orchestrator,
+    planning_node,
+    planner_router,
     cardiology_expert,
     pulmonary_expert,
     neurology_expert,
@@ -18,10 +43,10 @@ from src.nodes.patient_node import (
     gyno_urologist_expert,
     occulometric_expert,
     general_physician,
-    audience_aware_compiler
+    audience_aware_compiler,
 )
 
-# All expert nodes that fan out from the orchestrator
+# All expert node IDs — the planner_router returns a subset of these.
 expert_nodes = [
     "cardiology_expert",
     "pulmonary_expert",
@@ -43,6 +68,9 @@ builder.add_node("sync_initialization", sync_initialization)
 # ── Parallel Tracks (The Loop) ────────────────────────────────────────────
 builder.add_node("continuous_monitoring", continuous_monitoring)
 builder.add_node("orchestrator", orchestrator)
+
+# ── Planning (Phase 1.6) ──────────────────────────────────────────────────
+builder.add_node("planning_node", planning_node)
 
 # ── Expert Swarm (now using individual specialty graphs) ──────────────────
 builder.add_node("cardiology_expert", cardiology_expert)
@@ -68,11 +96,19 @@ builder.add_edge("patient_information_fetcher", "sync_initialization")
 builder.add_edge("sync_initialization", "continuous_monitoring")
 builder.add_edge("sync_initialization", "orchestrator")
 
-# Orchestrator fans out to ALL Expert nodes in parallel
-for node in expert_nodes:
-    builder.add_edge("orchestrator", node)
+# Orchestrator → Planner → conditional fan-out to selected experts.
+# planner_router returns a list of node IDs; LangGraph fans out to all
+# of them. Unselected experts simply don't run; general_physician's
+# fan-in waits only on the invoked predecessors.
+builder.add_edge("orchestrator", "planning_node")
+builder.add_conditional_edges(
+    "planning_node",
+    planner_router,
+    {n: n for n in expert_nodes},
+)
 
-# ALL Experts fan-in to the General Physician
+# ALL Experts fan-in to the General Physician (only the invoked ones
+# actually fire; LangGraph handles partial fan-in correctly).
 for node in expert_nodes:
     builder.add_edge(node, "general_physician")
 

@@ -6,6 +6,7 @@ instead of the old shared expert_subgraph.
 """
 import os
 from typing_extensions import Literal
+from typing import List
 
 from langchain_core.messages import HumanMessage, AIMessage, get_buffer_string
 from langgraph.types import Command
@@ -18,6 +19,11 @@ from src.states.patient_state import (
     AudienceAwareRouting
 )
 from src.utils.utils import get_today_str
+# Reuse the rule-based planner from the complex_diagnosis graph so we
+# have ONE source of truth for "given this snapshot, which specialties
+# are worth invoking" — same logic for both the patient_graph fan-out
+# and the complex_diagnosis_graph fan-out.
+from src.nodes.complex_diagnosis_node import planner_node as _shared_planner
 
 # Import individual specialty compiled graphs
 from src.graphs.cardiology_graph import graph as cardiology_graph
@@ -99,7 +105,12 @@ def orchestrator(state: PatientWorkflowState):
 # =============================================================================
 
 def _invoke_specialty_graph(domain: str, state: PatientWorkflowState) -> dict:
-    """Invoke a specialty-specific compiled graph with the patient's state."""
+    """Invoke a specialty-specific compiled graph with the patient's state.
+
+    Returns both the expert analysis AND the subgraph's reasoning trace,
+    so the patient_graph's `traces` accumulator gets the full per-
+    specialty chain of reasoning (information_retrieval +
+    interpretation_generation steps) — not just the final summary."""
     compiled_graph = _SPECIALTY_GRAPHS.get(domain)
 
     if compiled_graph is None:
@@ -121,10 +132,84 @@ def _invoke_specialty_graph(domain: str, state: PatientWorkflowState) -> dict:
             "patient_id": "patient_001",
         },
         "messages": [],
+        "traces": [],
     }
 
     result = compiled_graph.invoke(subgraph_initial_state)
-    return {"expert_analyses": [result.get("final_expert_analysis", {})]}
+    out: dict = {
+        "expert_analyses": [result.get("final_expert_analysis", {})],
+    }
+    # Forward subgraph traces into the patient state so the UI sees one
+    # unified reasoning trace covering the whole run.
+    sub_traces = result.get("traces") or []
+    if sub_traces:
+        out["traces"] = sub_traces
+    return out
+
+
+# =============================================================================
+# PLANNER (Phase 1.6) — selective specialty fan-out
+# =============================================================================
+
+def planning_node(state: PatientWorkflowState) -> dict:
+    """Decide which specialty experts to actually invoke for this run.
+
+    Reuses the rule-based planner from `src/nodes/complex_diagnosis_node`
+    so we have one source of truth. The shared planner expects
+    `sensor_telemetry` on its state; we adapt by feeding the patient
+    state's `continuous_monitoring_data` under that key.
+
+    Returns `selected_specialties` + `planner_rationale` — the conditional
+    edge in patient_graph reads `selected_specialties` to fan out only
+    to the matching expert nodes."""
+    adapted_state = {
+        "sensor_telemetry": state.get("continuous_monitoring_data") or {},
+        "ml_outputs": {},
+    }
+    out = _shared_planner(adapted_state)
+    selected = out.get("selected_specialties") or ["Cardiology", "General Physician"]
+    rationale = out.get("planner_rationale") or "Default workup"
+
+    msg = AIMessage(content=f"Planner selected {len(selected)} specialty graph(s): {', '.join(selected)}")
+    update: dict = {
+        "selected_specialties": selected,
+        "planner_rationale": rationale,
+        "messages": [msg],
+    }
+    if out.get("traces"):
+        update["traces"] = out["traces"]
+    return update
+
+
+# Mapping from planner output (specialty NAMES) to the graph node IDs
+# that the conditional edge router emits. Keep this in sync with the
+# expert_nodes list in patient_graph.py.
+SPECIALTY_NODE_MAP = {
+    "Cardiology": "cardiology_expert",
+    "Pulmonary": "pulmonary_expert",
+    "Neurology": "neurology_expert",
+    "Dermatology": "dermatology_expert",
+    "Obstetrics": "gyno_urologist_expert",
+    "Ocular": "occulometric_expert",
+    # General Physician is the synthesiser, not a fan-out specialist
+    "General Physician": None,
+}
+
+
+def planner_router(state: PatientWorkflowState) -> List[str]:
+    """LangGraph conditional-edge router.
+
+    Returns the list of expert-node IDs to invoke based on
+    `selected_specialties`. Always includes at least one node — falls
+    back to cardiology if the planner returned nothing actionable, so
+    the graph never deadlocks on an empty fan-out."""
+    selected = state.get("selected_specialties") or []
+    nodes: List[str] = []
+    for s in selected:
+        node_id = SPECIALTY_NODE_MAP.get(s)
+        if node_id:
+            nodes.append(node_id)
+    return nodes or ["cardiology_expert"]
 
 
 def cardiology_expert(state: PatientWorkflowState):

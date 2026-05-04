@@ -170,15 +170,27 @@ def planner_node(state: ComplexDiagnosisState) -> Dict[str, Any]:
     selected: List[str] = []
     rationale_bits: List[str] = []
 
-    hr = vitals.get("heart_rate") or 0
-    spo2 = vitals.get("spo2") or 100
-    br = vitals.get("breathing_rate") or 0
-    hrv = vitals.get("hrv_rmssd") or 50
+    # Use None when a vital is missing so we don't trip out-of-range rules
+    # on the firmware's 0-sentinel. Defaults below are benign so a missing
+    # field never triggers a specialty.
+    hr = vitals.get("heart_rate")
+    spo2 = vitals.get("spo2")
+    br = vitals.get("breathing_rate")
+    hrv = vitals.get("hrv_rmssd")
 
-    if hr > 120 or hr < 50 or hrv < 15:
+    cardio_trigger = (
+        (hr is not None and (hr > 120 or hr < 50)) or
+        (hrv is not None and hrv < 15)
+    )
+    if cardio_trigger:
         selected.append("Cardiology")
         rationale_bits.append(f"HR={hr}, HRV={hrv} -> cardiology")
-    if spo2 < 94 or br > 22 or br < 8:
+
+    pulm_trigger = (
+        (spo2 is not None and spo2 < 94) or
+        (br is not None and (br > 22 or br < 8))
+    )
+    if pulm_trigger:
         selected.append("Pulmonary")
         rationale_bits.append(f"SpO2={spo2}, RR={br} -> pulmonary")
     if (imu_d.get("tremor") or {}).get("tremor_flag") or \

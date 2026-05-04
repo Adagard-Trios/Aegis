@@ -1,3 +1,4 @@
+import operator
 from typing import Annotated, Sequence, Optional
 from typing import TypedDict # Standard typing, NOT typing_extensions
 from pydantic import BaseModel, Field
@@ -13,15 +14,27 @@ def reduce_analyses(left: list[dict] | None, right: list[dict] | None) -> list[d
 # Added total=False and simplified types to list/dict for safe UI parsing
 class PatientWorkflowState(TypedDict, total=False):
     messages: Annotated[Sequence[BaseMessage], add_messages]
-    patient_info: str 
-    continuous_monitoring_data: dict 
-    
+    patient_info: str
+    continuous_monitoring_data: dict
+
     # Safe reducer applied
     expert_analyses: Annotated[list[dict], reduce_analyses]
-    
-    human_feedback: Optional[str] 
-    compiled_results: dict 
-    physician_diagnosis: str 
+
+    human_feedback: Optional[str]
+    compiled_results: dict
+    physician_diagnosis: str
+
+    # ── Phase 1.6: planner-driven selective fan-out ──────────────────
+    # `selected_specialties` is set by planning_node and consumed by
+    # the conditional edge in patient_graph — only those expert nodes
+    # actually execute, instead of always running all 6 in parallel.
+    selected_specialties: list[str]
+    planner_rationale: str
+
+    # Reasoning trace accumulator (same shape as ExpertSubgraphState.traces)
+    # populated by every node + merged from each invoked specialty subgraph,
+    # so the UI gets the full chain of reasoning across the whole patient run.
+    traces: Annotated[list[dict], operator.add]
 
 class WorkflowOutputState(TypedDict, total=False):
     compiled_results: dict 
