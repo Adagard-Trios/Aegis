@@ -140,6 +140,41 @@ def init_db() -> None:
             )
             """
         )
+        # ── Phase 3: digital-twin state + simulation runs ────────────
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS twin_snapshots (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts          REAL NOT NULL,
+                patient_id  TEXT NOT NULL,
+                twin        TEXT NOT NULL,
+                state       JSON
+            )
+            """
+        )
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS ix_twin_snapshots_patient_ts "
+            "ON twin_snapshots(patient_id, twin, ts DESC)"
+        )
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS simulation_runs (
+                id           TEXT PRIMARY KEY,
+                ts           TEXT DEFAULT CURRENT_TIMESTAMP,
+                patient_id   TEXT NOT NULL,
+                user_id      TEXT,
+                twin         TEXT NOT NULL,
+                kind         TEXT,            -- "scenario" | "plan" | "replay"
+                params       JSON,
+                horizon_min  INTEGER,
+                result       JSON
+            )
+            """
+        )
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS ix_simruns_patient_ts "
+            "ON simulation_runs(patient_id, ts DESC)"
+        )
         cursor.execute(
             """
             CREATE TABLE IF NOT EXISTS audit_log (
