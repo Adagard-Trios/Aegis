@@ -5,8 +5,11 @@ import { Canvas } from '@react-three/fiber';
 import { OrbitControls, Environment, ContactShadows, Stars, Sparkles } from '@react-three/drei';
 import MedicalModel from './MedicalModel';
 import { useVestStream } from '../hooks/useVestStream';
+import { useActivePatient } from '../hooks/useActivePatient';
 import { PharmacologyPanel } from '../components/PharmacologyPanel';
 import { ScenarioPicker } from '../components/ScenarioPicker';
+import WhatIfPanel from '../components/WhatIfPanel';
+import TwinTimelineSlider from '../components/TwinTimelineSlider';
 
 export default function DigitalTwinPage() {
   const { data, connected, error } = useVestStream();
@@ -112,9 +115,25 @@ export default function DigitalTwinPage() {
         <div className="absolute top-8 right-8 pointer-events-auto space-y-4 max-h-[calc(100vh-4rem)] overflow-y-auto pr-1">
           <PharmacologyPanel />
           <ScenarioPicker />
+          <DigitalTwinControls />
+        </div>
+
+        {/* Time-slider scrubber along the bottom */}
+        <div className="absolute bottom-0 left-0 right-0 pointer-events-auto">
+          <DigitalTwinTimeline />
         </div>
 
       </div>
     </div>
   );
+}
+
+function DigitalTwinControls() {
+  const { patientId } = useActivePatient();
+  return <WhatIfPanel patientId={patientId} />;
+}
+
+function DigitalTwinTimeline() {
+  const { patientId } = useActivePatient();
+  return <TwinTimelineSlider patientId={patientId} />;
 }

@@ -396,6 +396,95 @@ export async function uploadImage(
   return apiPostForm<UploadImageResponse>(`/api/upload-image?${qs}`, form);
 }
 
+// ─── Digital twin (Phase 3 of agentic upgrade) ───────────────────
+
+export type TwinName = "cardiac" | "maternal_fetal";
+
+export interface TwinTreatmentStep {
+  t_min: number;
+  drug: string;
+  dose_mg: number;
+}
+
+export interface TwinTrajectoryPoint {
+  t_s: number;
+  state: Record<string, unknown>;
+}
+
+export interface TwinSimulationResponse {
+  status: string;
+  run_id?: string;
+  twin: TwinName;
+  patient_id: string;
+  horizon_min: number;
+  trajectory: TwinTrajectoryPoint[];
+  error?: string;
+}
+
+export interface TwinTimelineResponse {
+  status: string;
+  twin: TwinName;
+  patient_id: string;
+  count: number;
+  states: { ts: number; state: Record<string, unknown> }[];
+  error?: string;
+}
+
+export interface TwinRunSummary {
+  id: string;
+  ts: string;
+  twin: TwinName;
+  kind: "scenario" | "plan" | "replay";
+  horizon_min: number;
+}
+
+export function runTwinScenario(
+  body: {
+    twin: TwinName;
+    patient_id?: string;
+    inputs?: Record<string, unknown>;
+    horizon_min?: number;
+    step_s?: number;
+  },
+): Promise<TwinSimulationResponse> {
+  return apiPost<TwinSimulationResponse>("/api/digital-twin/scenario", body);
+}
+
+export function runTwinPlan(
+  body: {
+    twin: TwinName;
+    patient_id?: string;
+    inputs?: Record<string, unknown>;
+    treatment_steps: TwinTreatmentStep[];
+    horizon_min?: number;
+    step_s?: number;
+  },
+): Promise<TwinSimulationResponse> {
+  return apiPost<TwinSimulationResponse>("/api/digital-twin/plan", body);
+}
+
+export function fetchTwinTimeline(
+  twin: TwinName,
+  opts: { patient_id?: string; from_ts?: number; to_ts?: number; limit?: number } = {},
+): Promise<TwinTimelineResponse> {
+  const qs = new URLSearchParams({ twin });
+  if (opts.patient_id) qs.set("patient_id", opts.patient_id);
+  if (opts.from_ts !== undefined) qs.set("from_ts", String(opts.from_ts));
+  if (opts.to_ts !== undefined) qs.set("to_ts", String(opts.to_ts));
+  if (opts.limit !== undefined) qs.set("limit", String(opts.limit));
+  return apiGet<TwinTimelineResponse>(`/api/digital-twin/timeline?${qs}`);
+}
+
+export function fetchTwinRuns(
+  patient_id?: string,
+  limit = 50,
+): Promise<{ status: string; patient_id: string; runs: TwinRunSummary[] }> {
+  const qs = new URLSearchParams();
+  if (patient_id) qs.set("patient_id", patient_id);
+  qs.set("limit", String(limit));
+  return apiGet(`/api/digital-twin/runs?${qs}`);
+}
+
 // ─── Care plans (Phase 6) ─────────────────────────────────────────
 
 export interface CarePlan {
