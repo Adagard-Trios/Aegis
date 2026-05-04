@@ -322,6 +322,56 @@ export function runAgentNow(patient_id?: string, specialty?: string) {
   return apiPost<{ status: string; ran: string[] }>(`/api/agent/run-now?${qs}`, {});
 }
 
+// ─── Collaborative diagnosis (Phase 1 of agentic upgrade) ─────────
+
+export interface CandidateEvidence {
+  source: string;
+  verdict: "supports" | "contradicts" | "neutral";
+  feature: string;
+  weight: number;
+  note: string;
+}
+
+export interface CandidateDiagnosis {
+  name: string;
+  icd10?: string | null;
+  rarity: "common" | "uncommon" | "rare";
+  score: number;
+  evidence: CandidateEvidence[];
+  recommended_tests?: string[];
+}
+
+export interface ReasoningStep {
+  ts: string;
+  node: string;
+  kind: "analyser" | "llm" | "planner" | "rag" | "verdict";
+  inputs: Record<string, unknown>;
+  outputs: Record<string, unknown>;
+  confidence: number;
+  supports: string[];
+  contradicts: string[];
+  note: string;
+}
+
+export interface ComplexDiagnosisResponse {
+  status: string;
+  patient_id: string;
+  selected_specialties: string[];
+  planner_rationale: string;
+  candidates: CandidateDiagnosis[];
+  final_ranking: CandidateDiagnosis[];
+  recommended_next_tests: string[];
+  summary_for_clinician: string;
+  traces: ReasoningStep[];
+  error?: string;
+}
+
+export function runComplexDiagnosis(patient_id?: string) {
+  const qs = new URLSearchParams();
+  if (patient_id) qs.set("patient_id", patient_id);
+  return apiPost<ComplexDiagnosisResponse>(`/api/agent/complex-diagnosis?${qs}`, {});
+}
+
 // ─── Care plans (Phase 6) ─────────────────────────────────────────
 
 export interface CarePlan {

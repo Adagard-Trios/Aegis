@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import DashboardLayout from "../components/DashboardLayout";
+import CollaborativeDiagnosis from "../components/CollaborativeDiagnosis";
 import { motion } from "framer-motion";
 import { Stethoscope, AlertCircle, CheckCircle2, BarChart3, RefreshCw, Loader2 } from "lucide-react";
 import { useActivePatient } from "../hooks/useActivePatient";
@@ -163,6 +164,8 @@ export default function DiagnosticsPage() {
             <p className="mt-3 text-[11px] text-muted-foreground italic">Loading interpretations…</p>
           )}
         </motion.div>
+
+        <CollaborativeDiagnosis patientId={patientId} />
 
         <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} className="bg-card border border-border rounded-md p-4 shadow-card">
           <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-3">

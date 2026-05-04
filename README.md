@@ -1091,6 +1091,16 @@ MedVerse ships **security-capable but not security-mandatory** — auth is off b
   - **BMP180 counterfeit-cal protection** — many cheap GY-87 modules ship with a clone BMP180 whose temperature-related calibration registers (AC5/AC6/MC/MD) are correct but whose pressure-related registers (AC1/AC2/AC3/AC4/B1/B2) are out of datasheet range. Symptom: temp reads correctly (~33 °C), pressure outputs nonsense (~1613 hPa). v3.6 logs all calibration values during boot so the chip can be identified, and clamps published pressure to 800-1100 hPa with last-good fallback. The HW-611 BMP280 right next door reads correctly, so we don't actually lose pressure data.
   - **INMP441 sample shift** — `>> 11` was over-aggressive (divides 24-bit samples by 2048), flooring typical room-noise levels to zero before RMS, hence `Audio D:0` forever. Replaced with the standard `>> 8` which sign-extends the 24-bit MSB-justified sample into the int32 word.
   - `FW_VERSION` bumped 3.5 → 3.6 → 3.7 so each reflash is unambiguously visible in the backend log.
+- ✅ **Phase 1 of agentic upgrade — collaborative diagnosis graph** — new top-level `complex_diagnosis_graph` (registered in [langgraph.json](langgraph.json)) implements the agentic-AI paper's Disease Proposer + Rare/Related Agent + Skeptic + Diagnosis topology with an Agentic-Brain–style planner. 7 nodes:
+  - `planner_node` — rule-based gating (deterministic) — selects which downstream specialty graphs warrant invocation given current vitals + IMU + fetal state, instead of always running all 6
+  - `disease_proposer_node` (LLM) — initial 3-7 common-to-uncommon differential
+  - `rare_disease_agent_node` — Chroma similarity lookup against the bundled [data/rare_diseases.jsonl](data/rare_diseases.jsonl) snapshot (32 conditions across all 7 specialties; live Orphanet API deferred to Phase 5 once consent model exists)
+  - `related_disease_finder_node` — KB-similarity expansion of confusables for each existing candidate
+  - `background_agents_node` (LLM) — attaches per-candidate evidence (supports/contradicts/neutral with weights) using the actual telemetry features
+  - `skeptic_node` (LLM) — actively disconfirms each candidate; pulls weak scores down so real diagnoses surface by elimination
+  - `diagnosis_agent_node` (LLM) — final ranking + recommended next tests + clinician-facing narrative
+  
+  Every node emits structured `ReasoningStep` dicts into the shared `traces` accumulator, so the entire chain of reasoning is auditable. New endpoint `POST /api/agent/complex-diagnosis?patient_id=...` returns ranked candidates + evidence + planner gating + recommended tests + summary + full trace, and persists the synthesis as a `Collaborative Diagnosis` interpretation row visible on the existing diagnostics dashboard. Frontend [`CollaborativeDiagnosis.tsx`](frontend/app/components/CollaborativeDiagnosis.tsx) (mounted on `/diagnostics`) provides a one-click run button, ranked candidate cards with score bars + evidence pills + per-candidate test lists, and a collapsible reasoning trace tree. LLM-using nodes degrade gracefully when `GROQ_API_KEY` is absent — the graph still produces a (less rich) deterministic output.
 
 ### User's to-do (not something I can do)
 
