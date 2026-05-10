@@ -1,7 +1,13 @@
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show Clipboard, ClipboardData;
 import 'package:flutter_markdown/flutter_markdown.dart';
+
+/// User-supplied feedback signal on an AI bubble. The chat screen logs
+/// this locally (e.g., `aegis.chat.feedback` in secure storage) for
+/// future export — no backend wiring yet.
+enum ChatFeedback { thumbsUp, thumbsDown }
 
 /// One message bubble in the chat list. Material 3 shape: outgoing
 /// bubbles get a rounded-trailing tail (a tighter bottom-right corner),
@@ -24,20 +30,90 @@ class ChatMessageBubble extends StatelessWidget {
   /// instead of just "AI replied:".
   final String? personaLabel;
 
+  /// True for assistant bubbles that came back as an error / fallback.
+  /// Renders an error-tinted surface plus a Retry button next to the
+  /// long-press menu.
+  final bool isError;
+
+  /// Optional retry handler — typically the chat screen's `_send`
+  /// re-invocation with the same payload. When null, the retry button
+  /// is hidden.
+  final VoidCallback? onRetry;
+
+  /// Optional thumbs-up/thumbs-down handler. When null, the feedback
+  /// items in the long-press sheet are hidden (e.g., user bubbles
+  /// shouldn't have feedback).
+  final void Function(ChatFeedback feedback)? onFeedback;
+
   const ChatMessageBubble({
     super.key,
     required this.isUser,
     required this.text,
     this.imagePath,
     this.personaLabel,
+    this.isError = false,
+    this.onRetry,
+    this.onFeedback,
   });
+
+  Future<void> _showActionMenu(BuildContext context) async {
+    final theme = Theme.of(context);
+    final hasFeedback = onFeedback != null;
+    await showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: theme.colorScheme.surfaceContainerHigh,
+      showDragHandle: true,
+      builder: (sheet) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.copy_rounded),
+              title: const Text('Copy text'),
+              onTap: () async {
+                Navigator.pop(sheet);
+                await Clipboard.setData(ClipboardData(text: text));
+                if (context.mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('Copied to clipboard')),
+                  );
+                }
+              },
+            ),
+            if (hasFeedback) ...[
+              ListTile(
+                leading: const Icon(Icons.thumb_up_alt_outlined),
+                title: const Text('Helpful'),
+                onTap: () {
+                  Navigator.pop(sheet);
+                  onFeedback!(ChatFeedback.thumbsUp);
+                },
+              ),
+              ListTile(
+                leading: const Icon(Icons.thumb_down_alt_outlined),
+                title: const Text('Not helpful'),
+                onTap: () {
+                  Navigator.pop(sheet);
+                  onFeedback!(ChatFeedback.thumbsDown);
+                },
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final cs = theme.colorScheme;
-    final bg = isUser ? cs.primaryContainer : cs.surfaceContainerHigh;
-    final fg = isUser ? cs.onPrimaryContainer : cs.onSurface;
+    final bg = isError
+        ? cs.errorContainer
+        : (isUser ? cs.primaryContainer : cs.surfaceContainerHigh);
+    final fg = isError
+        ? cs.onErrorContainer
+        : (isUser ? cs.onPrimaryContainer : cs.onSurface);
 
     final radius = isUser
         ? const BorderRadius.only(
@@ -95,26 +171,42 @@ class ChatMessageBubble extends StatelessWidget {
                       const SizedBox(height: 8),
                     ],
                     if (text.isNotEmpty)
-                      Container(
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 14, vertical: 10),
-                        decoration: BoxDecoration(
-                          color: bg,
-                          borderRadius: radius,
-                        ),
-                        child: MarkdownBody(
-                          data: text,
-                          selectable: true,
-                          styleSheet: MarkdownStyleSheet.fromTheme(theme).copyWith(
-                            p: theme.textTheme.bodyMedium?.copyWith(color: fg),
-                            strong: theme.textTheme.bodyMedium?.copyWith(
-                              color: fg,
-                              fontWeight: FontWeight.w700,
+                      GestureDetector(
+                        onLongPress: () => _showActionMenu(context),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 14, vertical: 10),
+                          decoration: BoxDecoration(
+                            color: bg,
+                            borderRadius: radius,
+                          ),
+                          child: MarkdownBody(
+                            data: text,
+                            selectable: true,
+                            styleSheet: MarkdownStyleSheet.fromTheme(theme).copyWith(
+                              p: theme.textTheme.bodyMedium?.copyWith(color: fg),
+                              strong: theme.textTheme.bodyMedium?.copyWith(
+                                color: fg,
+                                fontWeight: FontWeight.w700,
+                              ),
+                              listBullet: theme.textTheme.bodyMedium?.copyWith(color: fg),
                             ),
-                            listBullet: theme.textTheme.bodyMedium?.copyWith(color: fg),
                           ),
                         ),
                       ),
+                    if (isError && onRetry != null) ...[
+                      const SizedBox(height: 6),
+                      TextButton.icon(
+                        onPressed: onRetry,
+                        icon: const Icon(Icons.refresh_rounded, size: 18),
+                        label: const Text('Retry'),
+                        style: TextButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(horizontal: 8),
+                          minimumSize: const Size(0, 32),
+                          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        ),
+                      ),
+                    ],
                   ],
                 ),
               ),

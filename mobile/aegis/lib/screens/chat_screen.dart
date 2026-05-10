@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:provider/provider.dart';
@@ -176,6 +178,9 @@ class _ChatScreenState extends State<ChatScreen> {
             text: '⚠ Could not reach the AI agent. Check your backend '
                 'connection in Settings → Connection.',
             personaLabel: _persona.label,
+            isError: true,
+            sourceText: text,
+            sourceImagePath: imagePath,
           ));
         } else {
           // ApiService.agentAsk returns {reply, severity, severity_score, specialty}
@@ -196,10 +201,59 @@ class _ChatScreenState extends State<ChatScreen> {
           isUser: false,
           text: '⚠ Request failed: $e',
           personaLabel: _persona.label,
+          isError: true,
+          sourceText: text,
+          sourceImagePath: imagePath,
         ));
       });
       debugPrint('[ChatScreen] agentAsk failed: $e');
     }
+  }
+
+  /// Retry handler attached to error bubbles. Pops the failed bubble +
+  /// the user message that produced it (so the conversation doesn't
+  /// duplicate), then re-fires `_send` with the original payload.
+  void _retry(_ChatMessage failed) {
+    if (failed.sourceText == null && failed.sourceImagePath == null) return;
+    setState(() {
+      _messages.remove(failed);
+      // The matching user message is the one immediately above the
+      // failed AI bubble — drop it too so _send re-adds it cleanly.
+      final lastUser = _messages.lastWhere(
+        (m) => m.isUser && m.text == failed.sourceText,
+        orElse: () => _ChatMessage(isUser: false, text: ''),
+      );
+      if (lastUser.isUser) _messages.remove(lastUser);
+    });
+    _send(failed.sourceText ?? '', failed.sourceImagePath);
+  }
+
+  /// Persist a thumbs-up / down for the AI bubble locally. Kept in
+  /// `flutter_secure_storage` under `aegis.chat.feedback` as a JSON
+  /// list — useful for future export to a real feedback pipeline.
+  Future<void> _recordFeedback(_ChatMessage message, ChatFeedback fb) async {
+    try {
+      final raw = await _storage.read(key: 'aegis.chat.feedback');
+      final list = raw == null
+          ? <Map<String, dynamic>>[]
+          : (jsonDecode(raw) as List).cast<Map<String, dynamic>>();
+      list.add({
+        'ts': DateTime.now().toIso8601String(),
+        'persona': message.personaLabel,
+        'reply': message.text,
+        'verdict': fb == ChatFeedback.thumbsUp ? 'up' : 'down',
+      });
+      await _storage.write(key: 'aegis.chat.feedback', value: jsonEncode(list));
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(fb == ChatFeedback.thumbsUp
+              ? 'Thanks — marked as helpful'
+              : 'Thanks — marked as not helpful'),
+          duration: const Duration(seconds: 2),
+        ),
+      );
+    } catch (_) {/* secure storage failure is non-fatal */}
   }
 
   /// Build the chat history payload sent to the agent. Skips the seeded
@@ -289,6 +343,17 @@ class _ChatScreenState extends State<ChatScreen> {
                   text: m.text,
                   imagePath: m.imagePath,
                   personaLabel: m.personaLabel,
+                  isError: m.isError,
+                  // Retry only on assistant error bubbles that captured
+                  // the originating payload.
+                  onRetry: m.isError && !m.isUser ? () => _retry(m) : null,
+                  // Long-press feedback menu only on successful
+                  // assistant replies (not on user bubbles, not on
+                  // error bubbles — feedback on a failure isn't
+                  // actionable).
+                  onFeedback: (!m.isUser && !m.isError)
+                      ? (fb) => _recordFeedback(m, fb)
+                      : null,
                 );
               },
             ),
@@ -373,10 +438,22 @@ class _ChatMessage {
   final String text;
   final String? imagePath;
   final String? personaLabel;
+  /// Set on assistant bubbles when the agent call failed — triggers
+  /// the error tint + Retry button on [ChatMessageBubble].
+  final bool isError;
+  /// The original user-typed text that produced this AI bubble. Stored
+  /// so the Retry handler can re-fire `_send` with the same payload
+  /// without prompting the user again.
+  final String? sourceText;
+  /// Same idea for an attached image path.
+  final String? sourceImagePath;
   _ChatMessage({
     required this.isUser,
     required this.text,
     this.imagePath,
     this.personaLabel,
+    this.isError = false,
+    this.sourceText,
+    this.sourceImagePath,
   });
 }

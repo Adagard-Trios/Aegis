@@ -15,6 +15,7 @@ import 'services/edge_anomaly_service.dart';
 import 'services/sync_queue_service.dart';
 import 'services/snapshot_uploader.dart';
 import 'services/ai_assessment_repository.dart';
+import 'services/api_service.dart';
 import 'services/patient_profile_service.dart';
 import 'ble/ble_connection_supervisor.dart';
 
@@ -112,7 +113,7 @@ class AegisApp extends StatefulWidget {
   State<AegisApp> createState() => _AegisAppState();
 }
 
-class _AegisAppState extends State<AegisApp> {
+class _AegisAppState extends State<AegisApp> with WidgetsBindingObserver {
   /// Built once and held for the lifetime of the app. GoRouter keeps
   /// internal state (current route, navigator stacks per branch) so we
   /// must not rebuild it on hot-reload — `late final` + a single
@@ -125,7 +126,27 @@ class _AegisAppState extends State<AegisApp> {
   late final GoRouter _router = buildAppRouter(context.read<AuthService>());
 
   @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    // Cold-start pre-warm — Render free tier sleeps after 15 min, HF
+    // Spaces after 48 hr. Fire-and-forget /health pings so the next
+    // user-driven call hits warm workers.
+    ApiService.prewarm();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    super.didChangeAppLifecycleState(state);
+    // Foreground transition — same pre-warm logic.
+    if (state == AppLifecycleState.resumed) {
+      ApiService.prewarm();
+    }
+  }
+
+  @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _router.dispose();
     super.dispose();
   }

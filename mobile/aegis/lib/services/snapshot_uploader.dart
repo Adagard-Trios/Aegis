@@ -57,18 +57,23 @@ class SnapshotUploader {
     final snap = stream.latestSnapshot;
     if (snap == null) return;
     try {
-      final res = await http.post(
-        Uri.parse('${ApiConfig.baseUrl}/api/snapshot/ingest'),
-        headers: {
-          'Content-Type': 'application/json',
-          BleTuning.mobileSourceHeader: BleTuning.mobileSourceValue,
-          if (auth != null) ...auth!.authHeaders(),
-        },
-        body: jsonEncode({
-          'patient_id': patientId,
-          'snapshot': snap,
-        }),
-      );
+      final res = await http
+          .post(
+            Uri.parse('${ApiConfig.baseUrl}/api/snapshot/ingest'),
+            headers: {
+              'Content-Type': 'application/json',
+              BleTuning.mobileSourceHeader: BleTuning.mobileSourceValue,
+              if (auth != null) ...auth!.authHeaders(),
+            },
+            body: jsonEncode({
+              'patient_id': patientId,
+              'snapshot': snap,
+            }),
+          )
+          // Generous timeout absorbs Render free-tier cold-start
+          // (~30 s wake) on the first push of a session. Subsequent
+          // pushes are sub-second.
+          .timeout(const Duration(seconds: 60));
       if (res.statusCode >= 200 && res.statusCode < 300) {
         _consecutiveFailures = 0;
       } else if (res.statusCode >= 400 && res.statusCode < 500) {

@@ -25,6 +25,21 @@ class WearVestBanner extends StatelessWidget {
   /// reflection floor.
   static const double _contactThreshold = 2000.0;
 
+  /// DS18B20 emits -127 °C as a sentinel when a probe momentarily fails
+  /// to ACK. Anything outside the physiological band is "disconnected".
+  static const double _tempMinC = 25.0;
+  static const double _tempMaxC = 45.0;
+
+  /// MPU6050 measures gravity always — total |a| should be near 1 g
+  /// (≈ 9.8 m/s²) on a still vest. A working sensor never produces
+  /// 0.0 across all three axes; that means the I2C bus is silent.
+  static const double _accelGravityFloor = 0.1;
+
+  /// INMP441 produces non-zero RMS even in a quiet room (electronic
+  /// noise floor). Exactly zero across analog + digital mics for a
+  /// few seconds means the I2S bus didn't initialise.
+  static const double _audioFloor = 1.0;
+
   @override
   Widget build(BuildContext context) {
     final supervisor = context.watch<BleConnectionSupervisor>();
@@ -40,25 +55,56 @@ class WearVestBanner extends StatelessWidget {
 
   /// Returns a [_BannerState] when the banner should show, or `null`
   /// when conditions are good and the banner stays hidden.
+  ///
+  /// Priority order — higher-severity hardware faults shadow the
+  /// "wear the vest" hint:
+  ///   1. DS18B20 disconnected     (temperature out of physiological band)
+  ///   2. MPU6050 silent           (zero accel magnitude → I2C dead)
+  ///   3. INMP441 silent           (zero RMS on both mics → I2S dead)
+  ///   4. PPG all silent           (existing — MAX30102 init failure)
+  ///   5. PPG no contact           (existing — user hasn't strapped on)
   static _BannerState? _evaluate(BleVestService vest) {
     if (vest.status != BleStatus.connected) return null;
     final v = vest.latestVitals;
     if (v == null) return null;
 
+    // 1. DS18B20 — at least one zone outside 25–45 °C means a probe
+    //    is disconnected (returning -127 sentinel) or held wrong.
+    final temps = <double>[v.tl, v.tr, v.tc];
+    final tempBroken = temps.where((t) => t < _tempMinC || t > _tempMaxC).length;
+    if (tempBroken == temps.length) return _BannerState.tempSilent;
+
+    // 2. MPU6050 — gravity should always show. Use the upper IMU
+    //    (the one mounted to the vest body — lower is on the abdomen
+    //    monitor and may not be paired).
+    final upperMag = _magnitude(v.upperAccelX, v.upperAccelY, v.upperAccelZ);
+    if (upperMag < _accelGravityFloor) return _BannerState.imuSilent;
+
+    // 3. INMP441 — zero RMS on both analog + digital mics for the
+    //    current frame. (One mic alone could be silent legitimately;
+    //    both at hard-zero means the I2S bus didn't init.)
+    if (v.analogRms < _audioFloor && v.digitalRms < _audioFloor) {
+      return _BannerState.audioSilent;
+    }
+
+    // 4 + 5. PPG — original logic, unchanged.
     final readings = <double>[v.ir1, v.ir2, v.ira];
     final contacting = readings.where((r) => r >= _contactThreshold).length;
     if (contacting > 0) return null;        // at least one probe is on skin → fine
 
-    // All three < threshold. Distinguish "all silent (=0)" — which is
-    // a hardware fault, not a wear issue — from "all at LED-only floor"
-    // — which means the user just hasn't strapped the vest on.
     final allSilent = readings.every((r) => r == 0.0);
     if (allSilent) return _BannerState.silent;
     return _BannerState.noContact;
   }
+
+  static double _magnitude(double x, double y, double z) {
+    return (x * x + y * y + z * z).abs(); // sum of squares; floor compares
+    // No sqrt needed — _accelGravityFloor² ≈ 0.01, and the comparison
+    // direction is preserved. Cheaper than sqrt on every render.
+  }
 }
 
-enum _BannerState { noContact, silent }
+enum _BannerState { noContact, silent, tempSilent, imuSilent, audioSilent }
 
 class _Banner extends StatelessWidget {
   final _BannerState state;
@@ -80,6 +126,28 @@ class _Banner extends StatelessWidget {
         'Vest sensors not responding',
         'The pulse-oximeter probes are reading zero counts. Re-seat '
             'the vest, then check Sensors → Sensor health.',
+        cs.error,
+      ),
+      _BannerState.tempSilent => (
+        Icons.thermostat_outlined,
+        'Temperature sensor disconnected',
+        'All three skin-temp probes are reading outside the '
+            'physiological band — likely a probe is unseated. Open '
+            'Sensors → Sensor health for details.',
+        cs.error,
+      ),
+      _BannerState.imuSilent => (
+        Icons.explore_off_outlined,
+        'Motion sensor not reporting',
+        'The MPU6050 IMU is silent (no gravity reading). The I2C bus '
+            'may have dropped — try reseating the vest or restarting it.',
+        cs.error,
+      ),
+      _BannerState.audioSilent => (
+        Icons.mic_off_outlined,
+        'Audio sensor silent',
+        'Neither chest microphone is producing readings. The I2S bus '
+            'may not have initialised — restart the vest if this persists.',
         cs.error,
       ),
     };

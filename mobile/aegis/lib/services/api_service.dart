@@ -20,6 +20,31 @@ class ApiService {
   /// `--dart-define=AI_URL=...`. See [ApiConfig.aiBaseUrl].
   static String get aiBaseUrl => ApiConfig.aiBaseUrl;
 
+  /// Generous timeout for the AI endpoints so a Render/HF cold start
+  /// (15-min idle sleep on Render, 48-hr idle on HF) doesn't false-fail
+  /// before the container is up. ~30 s wake + ~10–25 s LLM latency.
+  static const Duration _aiTimeout = Duration(seconds: 90);
+
+  /// Snapshot ingest hits Render only; ~30 s for a cold start.
+  static const Duration _ingestTimeout = Duration(seconds: 60);
+
+  /// Fire-and-forget /health probes on the data + AI hosts. Wakes the
+  /// containers without waiting on the response — primary use is on
+  /// app foreground (lifecycle resume) so the next user-driven call
+  /// hits a warm worker.
+  static void prewarm() {
+    Future<void> ping(String url) async {
+      try {
+        await http
+            .get(Uri.parse(url))
+            .timeout(const Duration(seconds: 5));
+      } catch (_) {/* expected on cold-start; we only care about waking the container */}
+    }
+
+    ping('$baseUrl/health');
+    ping('$aiBaseUrl/health');
+  }
+
   static Map<String, String> _headers(AuthService? auth, {bool json = true}) {
     final headers = <String, String>{};
     if (json) headers['Content-Type'] = 'application/json';
@@ -81,7 +106,9 @@ class ApiService {
       final uri = Uri.parse('$baseUrl/api/history').replace(
         queryParameters: {'resolution': resolution, 'limit': '$limit'},
       );
-      final response = await http.get(uri, headers: _headers(auth, json: false));
+      final response = await http
+          .get(uri, headers: _headers(auth, json: false))
+          .timeout(_ingestTimeout);
       if (response.statusCode == 200) {
         return jsonDecode(response.body) as List<dynamic>;
       }
@@ -137,11 +164,13 @@ class ApiService {
         'patient_profile': ?patientProfile,
         'history': ?history,
       };
-      final response = await http.post(
-        Uri.parse('$aiBaseUrl/api/agent/ask'),
-        headers: _agentHeaders(auth),
-        body: jsonEncode(body),
-      );
+      final response = await http
+          .post(
+            Uri.parse('$aiBaseUrl/api/agent/ask'),
+            headers: _agentHeaders(auth),
+            body: jsonEncode(body),
+          )
+          .timeout(_aiTimeout);
       if (response.statusCode == 200) {
         return jsonDecode(response.body) as Map<String, dynamic>;
       }
@@ -165,11 +194,13 @@ class ApiService {
         'patient_id': ?patientId,
         'patient_profile': ?patientProfile,
       };
-      final response = await http.post(
-        Uri.parse('$aiBaseUrl/api/agent/run-now'),
-        headers: _agentHeaders(auth),
-        body: jsonEncode(body),
-      );
+      final response = await http
+          .post(
+            Uri.parse('$aiBaseUrl/api/agent/run-now'),
+            headers: _agentHeaders(auth),
+            body: jsonEncode(body),
+          )
+          .timeout(_aiTimeout);
       if (response.statusCode == 200) {
         return jsonDecode(response.body) as Map<String, dynamic>;
       }
@@ -193,11 +224,13 @@ class ApiService {
         'snapshot': ?snapshot,
         'patient_profile': ?patientProfile,
       };
-      final response = await http.post(
-        Uri.parse('$aiBaseUrl/api/agent/complex-diagnosis'),
-        headers: _agentHeaders(auth),
-        body: jsonEncode(body),
-      );
+      final response = await http
+          .post(
+            Uri.parse('$aiBaseUrl/api/agent/complex-diagnosis'),
+            headers: _agentHeaders(auth),
+            body: jsonEncode(body),
+          )
+          .timeout(_aiTimeout);
       if (response.statusCode == 200) {
         return jsonDecode(response.body) as Map<String, dynamic>;
       }
