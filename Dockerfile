@@ -36,9 +36,12 @@ FROM python:3.13-slim AS runtime
 
 # Runtime-only OS deps. ffmpeg stays for the audio adapters; libpq5
 # is the binary half of psycopg2-binary (no -dev headers needed).
+# gosu lets the entrypoint chown the persistent disk as root, then
+# drop privileges to the medverse user before exec'ing the app.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ffmpeg \
         libpq5 \
+        gosu \
     && rm -rf /var/lib/apt/lists/*
 
 # Drop privileges — Render runs containers as root by default but
@@ -56,7 +59,11 @@ RUN pip install --no-cache-dir --no-index --find-links=/wheels -r requirements.t
 # mobile, models data caches, .pio firmware build artefacts).
 COPY --chown=medverse:medverse . .
 
-USER medverse
+# Entrypoint must run as root so it can chown the persistent disk
+# (Render mounts disks root-owned; the medverse user can't write
+# without help). The script drops to medverse via gosu before exec'ing
+# the app — see docker-entrypoint.sh.
+COPY --chmod=0755 docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 
 # Render injects $PORT; default 8000 for local docker run.
 ENV PORT=8000
@@ -67,8 +74,6 @@ EXPOSE 8000
 
 # Migrations run at start, not build — the DB env (MEDVERSE_DB_URL)
 # isn't available during image build. Idempotent: alembic skips
-# already-applied revisions.
-#
-# `python app.py` boots uvicorn on host 0.0.0.0 + $PORT — see the
-# `if __name__ == "__main__"` block at the bottom of app.py.
-CMD ["sh", "-c", "alembic upgrade head && python app.py"]
+# already-applied revisions. The entrypoint also chowns the persistent
+# disk so the unprivileged app user can write Chroma + uploads + SQLite.
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]

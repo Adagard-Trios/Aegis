@@ -23,11 +23,15 @@
 services:
   - type: web
     name: medverse-api
-    runtime: python
+    # Docker runtime — see Dockerfile + docker-entrypoint.sh. The Python
+    # buildpack runtime works too, but disks mounted under any path get
+    # root-owned permissions and the buildpack's app user can't chown
+    # them. Docker fixes this because the entrypoint runs as root and
+    # drops privileges via gosu after chown'ing the disk.
+    runtime: docker
+    dockerfilePath: ./Dockerfile
     plan: standard
     region: oregon
-    buildCommand: pip install --upgrade pip && pip install -r requirements.txt && alembic upgrade head
-    startCommand: python app.py
     healthCheckPath: /health
     autoDeploy: true
 
