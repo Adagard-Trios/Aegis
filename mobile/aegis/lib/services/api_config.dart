@@ -28,10 +28,10 @@ class ApiConfig {
 
   /// AI service on Hugging Face Spaces — handles `/api/agent/*` because
   /// LangGraph + LangChain doesn't fit in Render's 512 MB free tier.
-  /// Replace this with your own Space URL after deploying
-  /// `services/medverse-ai/` (see that folder's README).
+  /// Source for this deployment lives at services/medverse-ai/. Replace
+  /// with your own Space URL if you fork.
   static const String _hfSpacesAiUrl =
-      'https://sliitguy-medverse-ai.hf.space';
+      'https://nivakaran-medverse.hf.space';
 
   /// Build-time switch — pass `--dart-define=USE_LOCAL_BACKEND=true`
   /// when developing against a local FastAPI process, or
