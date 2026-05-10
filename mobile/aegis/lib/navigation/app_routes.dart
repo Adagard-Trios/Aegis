@@ -2,7 +2,9 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
 import '../ble/permission_gate.dart';
+import '../services/auth_service.dart';
 import '../theme/medverse_motion.dart';
+import '../screens/auth/login_screen.dart';
 import '../screens/cardiology_screen.dart';
 import '../screens/chat_screen.dart';
 import '../screens/dashboard_screen.dart';
@@ -34,10 +36,29 @@ import 'app_shell.dart';
 /// Sensors lives under `/settings/sensors` (a child of the Settings
 /// branch) — this is the move from "own bottom-nav tab" to "Settings
 /// sub-page" the redesign called for.
-GoRouter buildAppRouter() {
+///
+/// [auth] is used as `refreshListenable` + drives the [redirect]
+/// callback: an unauthenticated user is bounced to `/login`, and a
+/// successful sign-in (or restored token from secure storage) flips the
+/// guard so they land on Dashboard. Auth is opt-in server-side
+/// (MEDVERSE_AUTH_ENABLED on Render) — when disabled, /api/auth/login
+/// still issues a token, so the same flow works either way.
+GoRouter buildAppRouter(AuthService auth) {
   return GoRouter(
     initialLocation: '/',
+    refreshListenable: auth,
+    redirect: (context, state) {
+      final loggedIn = auth.isAuthenticated;
+      final atLogin = state.matchedLocation == '/login';
+      if (!loggedIn && !atLogin) return '/login';
+      if (loggedIn && atLogin) return '/';
+      return null;
+    },
     routes: [
+      GoRoute(
+        path: '/login',
+        pageBuilder: (_, _) => const NoTransitionPage(child: LoginScreen()),
+      ),
       // Single shell hosting all five tabs. The PermissionGate wraps
       // the shell so first-run BLE permission requests still happen
       // before any sub-route mounts the BLE service.

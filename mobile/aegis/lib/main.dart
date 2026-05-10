@@ -117,7 +117,12 @@ class _AegisAppState extends State<AegisApp> {
   /// internal state (current route, navigator stacks per branch) so we
   /// must not rebuild it on hot-reload — `late final` + a single
   /// initialiser does the right thing.
-  late final GoRouter _router = buildAppRouter();
+  ///
+  /// Wired with the AuthService from the provider tree so the router's
+  /// redirect callback can bounce unauthenticated users to /login and
+  /// rebuild whenever the token changes (login → push to /, logout →
+  /// pop back to /login).
+  late final GoRouter _router = buildAppRouter(context.read<AuthService>());
 
   @override
   void dispose() {
@@ -134,14 +139,16 @@ class _AegisAppState extends State<AegisApp> {
       // Router-driven navigation:
       //   - `appRouter` defines the StatefulShellRoute with five
       //     branches (Dashboard / Specialists / 3D Twin / Chat /
-      //     Settings) all hosted by AppShell + its M3 NavigationBar.
+      //     Settings) all hosted by AppShell + its M3 NavigationBar,
+      //     plus a /login leaf outside the shell.
       //   - PermissionGate wraps the shell builder inside the router
       //     config so first-run BLE permissions are still requested
       //     once, before any sub-route mounts the BLE service.
-      //   - Auth is disabled in the mobile build — the AuthService
-      //     stays in the provider tree as an empty shim so existing
-      //     `auth.authHeaders()` callers compile, but no login screen
-      //     gates the router.
+      //   - Auth gate: the router's redirect callback bounces
+      //     unauthenticated users to /login. When MEDVERSE_AUTH_ENABLED
+      //     is off on Render, /api/auth/login still issues a token, so
+      //     login still works — and an existing token from secure
+      //     storage skips the gate entirely.
       routerConfig: _router,
     );
   }

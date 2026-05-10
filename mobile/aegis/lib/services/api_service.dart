@@ -99,10 +99,17 @@ class ApiService {
   // thread should back off for ~60s.
 
   static Map<String, String> _agentHeaders(AuthService? auth) {
-    return {
+    final headers = <String, String>{
       ..._headers(auth),
       BleTuning.mobileSourceHeader: BleTuning.mobileSourceValue,
     };
+    final key = ApiConfig.aiKey;
+    if (key.isNotEmpty) {
+      // HF Space's MEDVERSE_AI_KEY check — see services/medverse-ai/
+      // app.py require_ai_key dependency.
+      headers['X-Medverse-Ai-Key'] = key;
+    }
+    return headers;
   }
 
   /// POST /api/agent/ask — single-specialty Q&A.

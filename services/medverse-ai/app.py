@@ -19,7 +19,7 @@ import sys
 from typing import Any, Dict, List, Optional
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -37,18 +37,57 @@ app = FastAPI(
     version="0.1.0",
 )
 
-# Open CORS — this service is called from the mobile app (no CORS impact)
-# and the Next.js dashboard (full CORS needed). Restrict via the
-# MEDVERSE_AI_CORS_ORIGINS env var when shipping to a known frontend.
+# CORS — defaults to a sensible allowlist (mobile WebView origins,
+# the live Render proxy, localhost dev) instead of "*" so a leaked
+# Space URL can't be hammered from any browser. Override via the
+# MEDVERSE_AI_CORS_ORIGINS env var if you ship a custom frontend.
+_DEFAULT_CORS_ORIGINS = [
+    "https://medverse-api.onrender.com",
+    "http://localhost:3000",
+    "http://localhost:8000",
+    "capacitor://localhost",   # Capacitor / Ionic shells
+    "http://10.0.2.2:8000",    # Android emulator → host
+]
 _cors_env = (os.environ.get("MEDVERSE_AI_CORS_ORIGINS") or "").strip()
-_cors_origins = [o.strip() for o in _cors_env.split(",") if o.strip()] or ["*"]
+_cors_origins = (
+    [o.strip() for o in _cors_env.split(",") if o.strip()]
+    or _DEFAULT_CORS_ORIGINS
+)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_origins,
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*"],
 )
+
+
+# ─── Shared API key auth ────────────────────────────────────────────────────
+#
+# Mobile + Render proxy attach `X-Medverse-Ai-Key: <value>` to every
+# /api/agent/* call. Hugging Face Spaces is public, so without this
+# anyone with the URL could drain the Groq budget.
+#
+# Disabled when MEDVERSE_AI_KEY is unset so local dev (`uvicorn app:app
+# --reload` without env vars) keeps working — set the env var on the
+# Space to lock it down in production.
+
+_AI_KEY_HEADER = "X-Medverse-Ai-Key"
+_REQUIRED_AI_KEY = (os.environ.get("MEDVERSE_AI_KEY") or "").strip()
+
+
+def require_ai_key(request: Request) -> None:
+    """FastAPI dependency that 401s when the configured key is missing
+    or doesn't match the request header. No-ops when the env var is
+    unset (useful for local dev)."""
+    if not _REQUIRED_AI_KEY:
+        return
+    presented = (request.headers.get(_AI_KEY_HEADER) or "").strip()
+    if presented != _REQUIRED_AI_KEY:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing or invalid X-Medverse-Ai-Key.",
+        )
 
 
 # ─── Specialty resolution ───────────────────────────────────────────────────
@@ -216,6 +255,7 @@ async def health_diagnostics():
         "langgraph": {"ok": langgraph_ok, "error": langgraph_err},
         "ml_adapters": adapters,
         "cors_origins": _cors_origins,
+        "ai_key_required": bool(_REQUIRED_AI_KEY),
     }
 
 
@@ -263,7 +303,7 @@ def _build_state(
     }
 
 
-@app.post("/api/agent/ask")
+@app.post("/api/agent/ask", dependencies=[Depends(require_ai_key)])
 async def api_agent_ask(req: AgentAskRequest):
     """Synchronous expert-graph invocation. Same shape as the original
     Render endpoint — mobile / dashboard need only swap the host."""
@@ -309,7 +349,7 @@ async def api_agent_ask(req: AgentAskRequest):
         }
 
 
-@app.post("/api/agent/run-now")
+@app.post("/api/agent/run-now", dependencies=[Depends(require_ai_key)])
 async def api_agent_run_now(req: AgentRunNowRequest):
     """Fan out across all 7 specialties (or the subset requested) and
     return the assessment dict per specialty."""
@@ -347,7 +387,7 @@ async def api_agent_run_now(req: AgentRunNowRequest):
     return {"status": "ok", "patient_id": pid, "results": results}
 
 
-@app.post("/api/agent/complex-diagnosis")
+@app.post("/api/agent/complex-diagnosis", dependencies=[Depends(require_ai_key)])
 async def api_agent_complex_diagnosis(req: ComplexDiagnosisRequest):
     """Run the collaborative diagnosis graph (proposer → background →
     skeptic → ranker → diagnoser → narrator). Returns ranked candidate

@@ -44,6 +44,18 @@ class ApiConfig {
   static const String _aiUrlOverride =
       String.fromEnvironment('AI_URL', defaultValue: '');
 
+  /// Shared API key the HF Spaces AI service expects on every
+  /// `/api/agent/*` call (header `X-Medverse-Ai-Key`). Bake the value
+  /// into release builds via `--dart-define=AI_KEY=<value>` so an APK
+  /// reverse-engineering attempt requires effort beyond `strings`.
+  /// Empty string means "don't send the header" — fine for local dev
+  /// when the AI service has MEDVERSE_AI_KEY unset.
+  static const String _aiKey =
+      String.fromEnvironment('AI_KEY', defaultValue: '');
+
+  /// AI key the mobile app sends in the `X-Medverse-Ai-Key` header.
+  static String get aiKey => _aiKey;
+
   /// Seed override at startup from secure storage / Settings UI.
   static void setOverride(String? url) {
     _override = (url == null || url.trim().isEmpty) ? null : url.trim();

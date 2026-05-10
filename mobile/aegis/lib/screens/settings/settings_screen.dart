@@ -1,5 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
+import 'package:provider/provider.dart';
+
+import '../../services/ai_assessment_repository.dart';
+import '../../services/auth_service.dart';
 
 /// Material 3 Settings hub.
 ///
@@ -9,9 +13,42 @@ import 'package:go_router/go_router.dart';
 class SettingsScreen extends StatelessWidget {
   const SettingsScreen({super.key});
 
+  Future<void> _confirmLogout(BuildContext context) async {
+    final theme = Theme.of(context);
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Sign out?'),
+        content: const Text(
+          'Your session token will be cleared. You can sign in again to '
+          'reconnect to the backend.',
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+          FilledButton(
+            style: FilledButton.styleFrom(
+              backgroundColor: theme.colorScheme.error,
+              foregroundColor: theme.colorScheme.onError,
+            ),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Sign out'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true || !context.mounted) return;
+    // Clear the AI assessment cache so cached text from the previous
+    // session doesn't bleed into the next user's view.
+    context.read<AiAssessmentRepository>().clear();
+    await context.read<AuthService>().logout();
+    // The router's redirect callback (driven by AuthService as
+    // refreshListenable) will bounce to /login automatically.
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final auth = context.watch<AuthService>();
     return ListView(
       padding: const EdgeInsets.symmetric(vertical: 8),
       children: [
@@ -22,6 +59,16 @@ class SettingsScreen extends StatelessWidget {
           subtitle: 'Identifier, name, notes',
           onTap: () => context.go('/settings/profile'),
         ),
+        if (auth.isAuthenticated)
+          _SettingsTile(
+            icon: Icons.logout_rounded,
+            title: 'Sign out',
+            subtitle: auth.username == null
+                ? 'Clear session token'
+                : 'Signed in as ${auth.username}',
+            destructive: true,
+            onTap: () => _confirmLogout(context),
+          ),
         const Divider(height: 1),
 
         _SectionHeader(label: 'Devices', theme: theme),
@@ -88,25 +135,35 @@ class _SettingsTile extends StatelessWidget {
   final String title;
   final String subtitle;
   final VoidCallback onTap;
+  final bool destructive;
 
   const _SettingsTile({
     required this.icon,
     required this.title,
     required this.subtitle,
     required this.onTap,
+    this.destructive = false,
   });
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final accent = destructive ? theme.colorScheme.error : theme.colorScheme.primary;
     return Semantics(
       button: true,
       label: '$title. $subtitle',
       child: ListTile(
-        leading: Icon(icon, color: theme.colorScheme.primary),
-        title: Text(title, style: theme.textTheme.titleMedium),
+        leading: Icon(icon, color: accent),
+        title: Text(
+          title,
+          style: theme.textTheme.titleMedium?.copyWith(
+            color: destructive ? theme.colorScheme.error : null,
+          ),
+        ),
         subtitle: Text(subtitle, style: theme.textTheme.bodySmall),
-        trailing: const Icon(Icons.chevron_right_rounded),
+        trailing: destructive
+            ? null
+            : const Icon(Icons.chevron_right_rounded),
         onTap: onTap,
         contentPadding: const EdgeInsets.symmetric(horizontal: 24, vertical: 4),
       ),

@@ -1397,10 +1397,34 @@ def agent_runner_loop():
 
 
 def _resolve_patient_id(query_patient_id: Optional[str], user: Optional[dict]) -> str:
-    """Read-time patient resolution: explicit query → JWT sub → active default."""
+    """Read-time patient resolution: explicit query → JWT sub → active default.
+
+    Per-patient access control: when the request is authenticated AND a
+    specific patient_id is asked for, that ID must match the JWT 'sub'
+    (or be in the explicit allow-list under user['allowed_patients']).
+    Otherwise raise 403.
+
+    Anonymous requests skip the check (so MEDVERSE_AUTH_ENABLED=false
+    deploys keep working). Real multi-tenant access control with a user
+    table + patient↔user mapping is deferred — for now every JWT user
+    owns a single patient_id equal to their 'sub' claim.
+    """
+    is_auth = bool(user) and not user.get("anonymous")
+    if is_auth and query_patient_id:
+        sub = str(user.get("sub") or "")
+        allowed = user.get("allowed_patients") or []
+        if query_patient_id != sub and query_patient_id not in allowed:
+            from fastapi import HTTPException, status as _st
+            raise HTTPException(
+                status_code=_st.HTTP_403_FORBIDDEN,
+                detail=(
+                    f"Patient '{query_patient_id}' is not accessible to "
+                    f"the authenticated user."
+                ),
+            )
     if query_patient_id:
         return query_patient_id
-    if user and not user.get("anonymous") and user.get("sub"):
+    if is_auth and user.get("sub"):
         return str(user["sub"])
     return ACTIVE_PATIENT_ID
 
@@ -2497,6 +2521,12 @@ def _resolve_specialty(label: str) -> str:
 # Spaces (16 GB RAM, free). See services/medverse-ai/.
 _AI_BASE_URL = (os.environ.get("MEDVERSE_AI_BASE_URL") or "").strip().rstrip("/")
 
+# Shared key the AI service requires on every /api/agent/* call. Set
+# MEDVERSE_AI_KEY on both Render and the HF Space (must match) to keep
+# the proxy authenticated. Empty here is fine when MEDVERSE_AI_KEY is
+# also unset on the Space (local dev, public demo).
+_AI_KEY = (os.environ.get("MEDVERSE_AI_KEY") or "").strip()
+
 
 async def _proxy_to_ai_service(path: str, payload: Dict[str, Any], timeout_s: float = 120.0) -> Optional[Dict[str, Any]]:
     """Forward an agent request to the HF Spaces AI service.
@@ -2510,8 +2540,11 @@ async def _proxy_to_ai_service(path: str, payload: Dict[str, Any], timeout_s: fl
         logging.getLogger(__name__).warning("httpx unavailable; agent proxy disabled")
         return None
     url = f"{_AI_BASE_URL}{path}"
+    headers: Dict[str, str] = {}
+    if _AI_KEY:
+        headers["X-Medverse-Ai-Key"] = _AI_KEY
     async with httpx.AsyncClient(timeout=timeout_s) as client:
-        r = await client.post(url, json=payload)
+        r = await client.post(url, json=payload, headers=headers)
         r.raise_for_status()
         return r.json()
 
