@@ -2,9 +2,9 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../models/vest_data_model.dart';
+import '../widgets/ai_assessment_card.dart';
 import '../widgets/live_waveform.dart';
 import '../widgets/biometric_card.dart';
-import '../widgets/interpretation_card.dart';
 import '../theme.dart';
 
 class ObstetricsScreen extends StatelessWidget {
@@ -45,17 +45,7 @@ class ObstetricsScreen extends StatelessWidget {
             ],
           ),
           const SizedBox(height: 24),
-          const Text('LATEST A.I. ANALYSIS', style: TextStyle(color: MedVerseTheme.textMuted, fontSize: 12, fontWeight: FontWeight.bold, letterSpacing: 1.5)),
-          const SizedBox(height: 12),
-          InterpretationCard(
-            title: "Obstetrics & Fetal Assessment",
-            icon: Icons.pregnant_woman_rounded,
-            content: "**Observations:**\n"
-                     "- **Fetal Heart Rate**: Baseline holding steady near ${model.hasKicks ? 145 : 140} BPM.\n"
-                     "- **Accelerations**: ${model.hasKicks ? "Reactive kicks detected." : "No recent accelerations."}\n"
-                     "- **Uterine Activity**: ${model.hasContractions ? "Active contractions detected!" : "Uterine activity is quiet."}\n\n"
-                     "**Conclusion**:\n${model.hasContractions ? "Category II tracing due to uterine pressure." : "Reassuring fetal status Category I tracing."}",
-          ),
+          const AiAssessmentCard(specialty: 'obstetrics'),
         ],
       ),
     );

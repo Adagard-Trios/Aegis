@@ -186,6 +186,93 @@ time_counter = 0
 vest_connected = False
 using_mock = False
 
+# Debug logger throttle state — see _debug_log_snapshot() at the end of
+# build_telemetry_snapshot(). Enabled with MEDVERSE_DEBUG_SNAPSHOT=true.
+_debug_snapshot_last_log = 0.0
+
+
+def _debug_log_snapshot(snap: dict) -> None:
+    """Print the snapshot fields the frontend will display, throttled.
+
+    Opt-in via env to avoid flooding console at SSE 10 Hz cadence:
+      MEDVERSE_DEBUG_SNAPSHOT=true        # enable
+      MEDVERSE_DEBUG_SNAPSHOT_INTERVAL=1  # seconds between prints (default 1.0)
+      MEDVERSE_DEBUG_SNAPSHOT_FULL=true   # print full pretty-JSON instead of summary
+    """
+    if not _truthy(os.environ.get("MEDVERSE_DEBUG_SNAPSHOT")):
+        return
+    global _debug_snapshot_last_log
+    now = time.time()
+    try:
+        interval = float(os.environ.get("MEDVERSE_DEBUG_SNAPSHOT_INTERVAL", "1.0"))
+    except (TypeError, ValueError):
+        interval = 1.0
+    if now - _debug_snapshot_last_log < interval:
+        return
+    _debug_snapshot_last_log = now
+
+    if _truthy(os.environ.get("MEDVERSE_DEBUG_SNAPSHOT_FULL")):
+        print("\n[SNAPSHOT-DEBUG] ───── full ─────")
+        print(json.dumps(snap, indent=2, default=str))
+        print("[SNAPSHOT-DEBUG] ───── end ──────\n")
+        return
+
+    # Compact per-section summary — every key the frontend dashboards bind to.
+    conn = snap.get("connection") or {}
+    vit  = snap.get("vitals") or {}
+    ppg  = snap.get("ppg") or {}
+    tmp  = snap.get("temperature") or {}
+    imu  = snap.get("imu") or {}
+    env  = snap.get("environment") or {}
+    ecg  = snap.get("ecg") or {}
+    aud  = snap.get("audio") or {}
+    fet  = snap.get("fetal") or {}
+    dr   = (fet.get("dawes_redman") or {})
+    pha  = snap.get("pharmacology") or {}
+    der  = snap.get("imu_derived") or {}
+
+    src = "MOCK" if conn.get("using_mock") else (
+        f"vest={'Y' if conn.get('vest_connected') else 'N'} "
+        f"fetal={'Y' if conn.get('fetal_connected') else 'N'}"
+    )
+    print(
+        f"[SNAPSHOT-DEBUG t={snap.get('timestamp')} src={src}]\n"
+        f"  vitals      : HR={vit.get('heart_rate')}bpm  SpO2={vit.get('spo2')}%  "
+        f"BR={vit.get('breathing_rate')}/min  HRV={vit.get('hrv_rmssd')}ms  "
+        f"PI={vit.get('perfusion_index')} ({vit.get('signal_quality')})\n"
+        f"  ppg         : IR1={ppg.get('ir1')} Red1={ppg.get('red1')}  "
+        f"IR2={ppg.get('ir2')} Red2={ppg.get('red2')}  "
+        f"IRA={ppg.get('ira')} RedA={ppg.get('reda')}  "
+        f"T1={ppg.get('t1')}C T2={ppg.get('t2')}C\n"
+        f"  ecg         : L1={ecg.get('lead1')} L2={ecg.get('lead2')} L3={ecg.get('lead3')}  "
+        f"ECG_HR={ecg.get('ecg_hr')}bpm\n"
+        f"  temperature : L_axilla={tmp.get('left_axilla')}C  R_axilla={tmp.get('right_axilla')}C  "
+        f"cervical={tmp.get('cervical')}C\n"
+        f"  imu         : pitch[U/L]={imu.get('upper_pitch')}/{imu.get('lower_pitch')}  "
+        f"roll[U/L]={imu.get('upper_roll')}/{imu.get('lower_roll')}  "
+        f"spinal={imu.get('spinal_angle')}deg posture={imu.get('posture_label')} "
+        f"poor={imu.get('poor_posture')}  bmp={imu.get('bmp180_pressure')}hPa/{imu.get('bmp180_temp')}C\n"
+        f"  environment : bmp280={env.get('bmp280_pressure')}hPa/{env.get('bmp280_temp')}C  "
+        f"dht11={env.get('dht11_humidity')}% / {env.get('dht11_temp')}C\n"
+        f"  audio       : analog_rms={aud.get('analog_rms')}  digital_rms={aud.get('digital_rms')}\n"
+        f"  fetal       : mode={fet.get('mode')}  piezo={fet.get('piezo_raw')}  "
+        f"kicks={fet.get('kicks')}  contractions={fet.get('contractions')}  "
+        f"heart_tones={fet.get('heart_tones')}  bowel={fet.get('bowel_sounds')}  "
+        f"film_pressure={fet.get('film_pressure')}  movement={fet.get('movement')}  "
+        f"mic_volts={fet.get('mic_volts')}\n"
+        f"  dawes_redman: baseline_fhr={dr.get('baseline_fhr')}  "
+        f"accel/min={dr.get('accelerations_per_min')}  decel L/S/P={dr.get('light_decelerations')}/{dr.get('severe_decelerations')}/{dr.get('prolonged_decelerations')}  "
+        f"STV={dr.get('stv_ms')}ms LTV={dr.get('ltv_ms')}ms  abn STV/LTV={dr.get('abnormal_stv_pct')}/{dr.get('abnormal_ltv_pct')}%\n"
+        f"  pharmacology: med={pha.get('active_medication')} dose={pha.get('dose')} "
+        f"sim_t={pha.get('sim_time')}s clearance={pha.get('clearance_model')}\n"
+        f"  imu_derived : tremor={(der.get('tremor') or {}).get('band_power')}  "
+        f"gait_cv={(der.get('gait') or {}).get('stride_cv')}  "
+        f"activity={der.get('activity_state')}\n"
+        f"  imaging     : {snap.get('imaging')}\n"
+        f"  waveform    : {'present' if snap.get('waveform') else 'omitted (set MEDVERSE_INCLUDE_WAVEFORM=true)'}"
+    )
+
+
 # =============================================================
 # SIGNAL PROCESSING
 # =============================================================
@@ -828,7 +915,7 @@ def build_telemetry_snapshot() -> dict:
             if include_wave
             else None
         )
-        return {
+        snapshot = {
             "timestamp": time_counter,
             "ppg": {
                 "ir1": round(ir1_data[-1], 1) if ir1_data else 0,
@@ -923,6 +1010,14 @@ def build_telemetry_snapshot() -> dict:
                 else None
             ),
         }
+    # Outside data_lock — debug logger reads its own snapshot copy and
+    # is throttled to MEDVERSE_DEBUG_SNAPSHOT_INTERVAL seconds, so it can't
+    # block the SSE / agent / sqlite paths even at high SSE rates.
+    try:
+        _debug_log_snapshot(snapshot)
+    except Exception as _e:
+        print(f"[SNAPSHOT-DEBUG] logger error: {_e}")
+    return snapshot
 
 
 # =============================================================
@@ -958,9 +1053,25 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="MedVerse Telemetry API", version="1.0.0", lifespan=lifespan)
 
 _cors_origins = cors_origins()
+# Regex covers any localhost / 127.0.0.1 / ::1 / local-network (192.168.x, 10.x,
+# 172.16-31.x) origin on any port — needed because Next.js dev shifts ports
+# when 3000 is busy, and phone-on-LAN testing uses the laptop's LAN IP.
+# Browser CORS spec rejects allow_origins=["*"] when allow_credentials=True,
+# so we use the regex form instead.
+_cors_origin_regex = (
+    r"^https?://("
+    r"localhost(:\d+)?|"
+    r"127\.0\.0\.1(:\d+)?|"
+    r"\[::1\](:\d+)?|"
+    r"192\.168\.\d{1,3}\.\d{1,3}(:\d+)?|"
+    r"10\.\d{1,3}\.\d{1,3}\.\d{1,3}(:\d+)?|"
+    r"172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}(:\d+)?"
+    r")$"
+)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_origins,
+    allow_origin_regex=_cors_origin_regex,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -1189,12 +1300,21 @@ async def stream_telemetry(
 def sqlite_writer_loop():
     """Periodically persist the current telemetry snapshot, evaluate alert
     rules, advance the digital twins, and persist twin snapshots so the
-    /api/digital-twin/timeline endpoint has real history to chart."""
+    /api/digital-twin/timeline endpoint has real history to chart.
+
+    Mobile-owns-BLE coexistence: when a mobile client is the BLE master
+    (it sends `X-Aegis-Source: mobile-ble` on its agent / ingest calls),
+    we skip the BLE-derived insert here so we don't double-write the
+    same (ts, patient_id) row. The mobile's POST /api/snapshot/ingest
+    is the canonical source while its flag is hot. Backend resumes
+    its own BLE insert path 60 s after the last mobile ping.
+    """
     twin_tick_counter = 0
     while True:
         snapshot = build_telemetry_snapshot()
         try:
-            insert_telemetry(snapshot, patient_id=ACTIVE_PATIENT_ID)
+            if not _mobile_ble_active(ACTIVE_PATIENT_ID):
+                insert_telemetry(snapshot, patient_id=ACTIVE_PATIENT_ID)
         except Exception as e:
             logging.getLogger(__name__).error(f"telemetry write failed: {e}")
         try:
@@ -1291,6 +1411,90 @@ async def get_snapshot(patient_id: Optional[str] = None, user=Depends(require_us
     pid = _resolve_patient_id(patient_id, user)
     data = get_latest_telemetry(patient_id=pid)
     return data if data else build_telemetry_snapshot()
+
+
+# =============================================================
+# MOBILE-OWNS-BLE COEXISTENCE
+# =============================================================
+# When the Aegis mobile app connects directly to the vest +
+# AbdomenMonitor over BLE (the canonical mobile architecture), it sends
+# `X-Aegis-Source: mobile-ble` on every snapshot/agent call. We track a
+# per-patient_id "flag hot" timestamp; while it's hot (≤60s old):
+#   - sqlite_writer_loop skips its own BLE-derived insert (mobile is
+#     pushing rows via /api/snapshot/ingest at ~15s)
+#   - agent + digital-twin routes prefer body-supplied snapshots over
+#     the locally-built one
+# After 60s of silence we assume the mobile is gone or paused; the
+# backend's own BLE thread + snapshot path resumes for the laptop demo.
+
+_MOBILE_BLE_TTL_SECS = 60.0
+_mobile_ble_last_ping: Dict[str, float] = {}
+_MOBILE_SOURCE_HEADER = "x-aegis-source"
+_MOBILE_SOURCE_VALUE = "mobile-ble"
+
+
+def _mobile_ble_active(patient_id: str) -> bool:
+    """True if a mobile BLE master pinged for this patient in the last 60 s."""
+    last = _mobile_ble_last_ping.get(patient_id, 0.0)
+    return (time.time() - last) < _MOBILE_BLE_TTL_SECS
+
+
+def _touch_mobile_ble(request: Request, patient_id: str) -> None:
+    """Refresh the mobile-owns-BLE flag if the request carries the header."""
+    src = request.headers.get(_MOBILE_SOURCE_HEADER, "").lower()
+    if src == _MOBILE_SOURCE_VALUE:
+        _mobile_ble_last_ping[patient_id] = time.time()
+
+
+def _prefer_body_snapshot(
+    request: Request,
+    patient_id: str,
+    body_snapshot: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """When a mobile-BLE master attaches a fresh snapshot in its agent
+    request body, use that — it's newer than anything our own BLE
+    thread could have built. Falls back to the in-process snapshot
+    otherwise (laptop demo / web frontend path)."""
+    _touch_mobile_ble(request, patient_id)
+    if body_snapshot and isinstance(body_snapshot, dict):
+        return body_snapshot
+    return build_telemetry_snapshot()
+
+
+class SnapshotIngestRequest(BaseModel):
+    patient_id: Optional[str] = None
+    snapshot: Dict[str, Any]
+
+
+@app.post("/api/snapshot/ingest")
+async def ingest_snapshot(
+    req: SnapshotIngestRequest,
+    request: Request,
+    user=Depends(require_user),
+):
+    """Mobile-side snapshot push (~15 s cadence).
+
+    The mobile app owns the BLE radio in its build and posts the latest
+    `LocalSnapshotBuilder` snapshot here so the backend's `/api/history`,
+    `/api/fhir/*`, alert evaluator, and agent loop see continuous data.
+
+    Idempotency: insert_telemetry already keys on (ts, patient_id) — the
+    backend dedupes on collision, so an at-most-once push contract on
+    the mobile side is enough.
+    """
+    pid = _resolve_patient_id(req.patient_id, user)
+    _touch_mobile_ble(request, pid)
+    try:
+        insert_telemetry(req.snapshot, patient_id=pid)
+        try:
+            evaluate_and_persist_alerts(req.snapshot, pid)
+        except Exception as e:
+            logging.getLogger(__name__).debug(f"alert eval on ingest skipped: {e}")
+        return {"status": "ok", "patient_id": pid, "mobile_ble_active": True}
+    except Exception as e:
+        from fastapi import HTTPException as _HTTPExc
+        logging.getLogger(__name__).error(f"snapshot ingest failed: {e}")
+        raise _HTTPExc(status_code=500, detail=f"ingest failed: {e}")
 
 
 @app.get("/api/interpretations")
@@ -1615,6 +1819,10 @@ class TwinScenarioRequest(BaseModel):
     inputs: Optional[Dict[str, Any]] = None     # starting overrides
     horizon_min: int = 60
     step_s: int = 60
+    # Optional: mobile-BLE clients pass their freshest snapshot to keep
+    # the mobile-owns-BLE flag warm. Twin sim itself is in-memory, so
+    # this field is informational here.
+    snapshot: Optional[Dict[str, Any]] = None
 
 
 class TwinPlanRequest(BaseModel):
@@ -1624,6 +1832,7 @@ class TwinPlanRequest(BaseModel):
     treatment_steps: List[Dict[str, Any]] = []  # [{t_min, drug, dose_mg}]
     horizon_min: int = 60
     step_s: int = 60
+    snapshot: Optional[Dict[str, Any]] = None
 
 
 @app.post("/api/digital-twin/scenario")
@@ -1638,6 +1847,7 @@ async def api_twin_scenario(
     (e.g. {hr_bpm: 130} to model a what-if tachycardia baseline).
     Persists the run + returns the trajectory for charting."""
     pid = _resolve_patient_id(req.patient_id, user)
+    _touch_mobile_ble(request, pid)
     audit(request, user, "twin_scenario", "digital_twin", f"{pid}:{req.twin}")
     twin_inst = _resolve_twin(req.twin, pid)
     traj = twin_inst.simulate(
@@ -1949,7 +2159,17 @@ async def upload_lab_results(file: UploadFile = File(...)):
 
 # ─── Image upload (Phase 2.A: feeds the retina/skin runtime adapters) ───
 
-UPLOAD_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "uploads"))
+# Where /api/upload-image persists clinical photos. Override with
+# MEDVERSE_UPLOADS_DIR when the runtime FS is ephemeral (e.g., Render's
+# default disk) — point it at a mounted persistent volume instead, so
+# image paths surface in subsequent snapshots remain valid across
+# redeploys.
+UPLOAD_ROOT = os.path.abspath(
+    os.environ.get(
+        "MEDVERSE_UPLOADS_DIR",
+        os.path.join(os.path.dirname(__file__), "uploads"),
+    )
+)
 _VALID_IMAGE_MODALITIES = {"retinal", "skin"}
 _VALID_IMAGE_EXTS = {".png", ".jpg", ".jpeg"}
 
@@ -2167,6 +2387,10 @@ class AgentAskRequest(BaseModel):
     specialty: str
     message: str
     patient_id: Optional[str] = None
+    # Mobile-BLE clients attach the freshest local snapshot here so the
+    # graph runs against current data even between /api/snapshot/ingest
+    # pushes. Optional — backend-built snapshot is the fallback.
+    snapshot: Optional[Dict[str, Any]] = None
 
 
 _SPECIALTY_TO_GRAPH = {
@@ -2196,7 +2420,10 @@ async def api_agent_ask(req: AgentAskRequest, request: Request, user=Depends(req
     try:
         from src.graphs.graph_factory import build_expert_graph
         graph = build_expert_graph(specialty).compile()
-        snapshot = get_latest_telemetry(patient_id=pid) or build_telemetry_snapshot()
+        # Mobile-BLE clients attach a fresh snapshot in the body — prefer it
+        # over the locally-built one so we always run the graph against the
+        # phone's freshest live tick (the local DB lags by up to 15 s).
+        snapshot = _prefer_body_snapshot(request, pid, req.snapshot)
         state = {
             "messages": [{"role": "user", "content": req.message}],
             "patient_id": pid,

@@ -99,7 +99,7 @@ class _SimulationControlsPanelState extends State<SimulationControlsPanel> {
                               child: ChoiceChip(
                                 label: Text(mode),
                                 selected: isSelected,
-                                selectedColor: MedVerseTheme.primary.withOpacity(0.2),
+                                selectedColor: MedVerseTheme.primary.withValues(alpha: 0.2),
                                 backgroundColor: MedVerseTheme.background,
                                 labelStyle: TextStyle(
                                   color: isSelected ? MedVerseTheme.primary : MedVerseTheme.textMuted,
@@ -139,7 +139,8 @@ class _SimulationControlsPanelState extends State<SimulationControlsPanel> {
                       child: ElevatedButton(
                         onPressed: () async {
                           await ApiService.injectMedication('Labetalol', 100);
-                          if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Simulating Labetalol 100mg')));
+                          if (!context.mounted) return;
+                          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Simulating Labetalol 100mg')));
                         },
                         style: ElevatedButton.styleFrom(backgroundColor: MedVerseTheme.primary, foregroundColor: Colors.white),
                         child: const Text('Labetalol'),
@@ -150,7 +151,8 @@ class _SimulationControlsPanelState extends State<SimulationControlsPanel> {
                       child: ElevatedButton(
                         onPressed: () async {
                           await ApiService.injectMedication('Oxytocin', 10);
-                          if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Simulating Oxytocin 10U')));
+                          if (!context.mounted) return;
+                          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Simulating Oxytocin 10U')));
                         },
                         style: ElevatedButton.styleFrom(backgroundColor: MedVerseTheme.accent, foregroundColor: Colors.white),
                         child: const Text('Oxytocin'),

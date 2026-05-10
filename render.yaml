@@ -1,46 +1,132 @@
 # Render blueprint for the MedVerse FastAPI backend.
 # https://render.com/docs/blueprint-spec
 #
-# After connecting this repo as a Blueprint, fill the four `sync: false`
-# env vars (GROQ_API_KEY, MEDVERSE_JWT_SECRET, MEDVERSE_DB_URL,
-# MEDVERSE_CORS_ORIGINS) in the Render dashboard.
+# Architecture: the backend runs **without a Bluetooth radio** in the
+# cloud. The mobile app owns BLE end-to-end and pushes snapshots to
+# `POST /api/snapshot/ingest` every 15 s, plus attaches the freshest
+# snapshot in the body of every `/api/agent/*` and `/api/digital-twin/*`
+# call. So the backend is purely the AI / FHIR / persistence brain;
+# disabling the BLE thread is mandatory (see MEDVERSE_DISABLE_BLE).
 #
-# Cost: Starter plan ($7/mo). The Free plan sleeps after 15 min of idle
-# and is unsuitable for SSE telemetry.
+# After connecting this repo as a Blueprint, fill the `sync: false`
+# env vars in the Render dashboard. Groq keys default to one shared
+# value if you only set GROQ_API_KEY — per-specialty overrides only
+# matter when you want independent rate-limit accounting.
+#
+# Plan choice: **standard** ($25/mo, 2 GB RAM) — comfortable for
+# LangGraph + Chroma + sklearn adapters together. Drop to **starter**
+# ($7/mo, 1 GB) only if you also flip `MEDVERSE_DISABLE_AGENT_LOOP=true`
+# and accept that Chroma RAG history will OOM on first index. **Free**
+# is unsuitable: 30-second cold starts after 15 min idle ruin SSE +
+# the snapshot-ingest loop misses windows.
 
 services:
   - type: web
     name: medverse-api
     runtime: python
-    plan: starter
-    buildCommand: pip install -r requirements.txt
+    plan: standard
+    region: oregon
+    buildCommand: pip install --upgrade pip && pip install -r requirements.txt && alembic upgrade head
     startCommand: python app.py
     healthCheckPath: /health
     autoDeploy: true
+
+    # Persistent disk for Chroma RAG history + uploaded lab/skin/retinal
+    # images. Without this, both reset on every redeploy. 1 GB is
+    # enough for the bundled rare-disease KB + a few hundred uploads.
+    disk:
+      name: medverse-data
+      mountPath: /var/medverse
+      sizeGB: 1
+
     envVars:
       - key: PYTHON_VERSION
         value: 3.13.0
-      # Cloud has no Bluetooth radio — go straight to mock.
+
+      # ── Architecture flags ────────────────────────────────────────
+      # Cloud has no Bluetooth radio. Mobile is the BLE master and
+      # pushes snapshots via /api/snapshot/ingest.
       - key: MEDVERSE_DISABLE_BLE
         value: "true"
-      # Auth off by default; flip to "true" + set MEDVERSE_JWT_SECRET when
-      # the frontend is auth-aware (Phase 8).
+      # Background agent loop runs every 60 s by default — costs Groq
+      # tokens with no user driving it. Flip on if you want continuous
+      # alerting; off is fine when the mobile app drives requests.
+      - key: MEDVERSE_DISABLE_AGENT_LOOP
+        value: "true"
+      # Auth off by default; flip to "true" + set MEDVERSE_JWT_SECRET
+      # when the frontend ships JWT login.
       - key: MEDVERSE_AUTH_ENABLED
         value: "false"
-      # Persist SQLite to a writable path. If MEDVERSE_DB_URL is set,
-      # this is ignored (Postgres/Timescale is used instead).
+
+      # ── Storage paths (mounted to the persistent disk above) ──────
+      # SQLite fallback if MEDVERSE_DB_URL isn't set. Both Postgres
+      # and SQLite go through the same migrations.
       - key: MEDVERSE_SQLITE_PATH
-        value: /tmp/medverse.db
-      # ── User-supplied secrets (set in Render dashboard) ─────────────
+        value: /var/medverse/medverse.db
+      # Chroma vector store (per-specialty history collections).
+      - key: CHROMA_PERSIST_DIR
+        value: /var/medverse/chroma
+      # Uploaded clinical images (skin + retinal) live here. The
+      # /api/upload-image route writes <patient>/<modality>/<ts>.png.
+      - key: MEDVERSE_UPLOADS_DIR
+        value: /var/medverse/uploads
+
+      # ── Models / runtime adapters ─────────────────────────────────
+      # The 12 trainable pipelines under models/<slug>/ download large
+      # datasets (PTB-XL = 25 GB, ISIC = 25 GB) on first train — way
+      # past Render's disk cap. Train + export weights locally; the
+      # runtime adapters look here for the pickle files.
+      - key: MEDVERSE_MODELS_DIR
+        value: /var/medverse/models
+
+      # ── User-supplied secrets (set in the Render dashboard) ───────
+      # Either set the shared GROQ_API_KEY only (every specialty falls
+      # back to it) OR set per-specialty keys for independent rate
+      # limits. See src/llms/groqllm.py.
       - key: GROQ_API_KEY
         sync: false
+      - key: CARDIOLOGY_EXPERT_GROQ_API_KEY
+        sync: false
+      - key: PULMONARY_EXPERT_GROQ_API_KEY
+        sync: false
+      - key: NEUROLOGY_EXPERT_GROQ_API_KEY
+        sync: false
+      - key: DERMATOLOGY_EXPERT_GROQ_API_KEY
+        sync: false
+      - key: GYNECOLOGY_EXPERT_GROQ_API_KEY
+        sync: false
+      - key: OCULOMETRIC_EXPERT_GROQ_API_KEY
+        sync: false
+      - key: GENERAL_PHYSICIAN_GROQ_API_KEY
+        sync: false
+
+      # JWT signing secret — only needed when MEDVERSE_AUTH_ENABLED=true.
       - key: MEDVERSE_JWT_SECRET
         sync: false
-      # Timescale Cloud connection string. Use `postgresql+asyncpg://`
-      # prefix; src/utils/db.py normalizes it for psycopg2.
+
+      # Postgres / Timescale (preferred). Use `postgresql+asyncpg://`
+      # prefix; src/utils/db.py normalises for psycopg2 internally.
+      # Provision via the Render Postgres add-on or any managed PG.
+      # If unset, falls back to SQLite at MEDVERSE_SQLITE_PATH.
       - key: MEDVERSE_DB_URL
         sync: false
-      # Comma-separated allowlist. Add the Vercel URL after first FE deploy
-      # (e.g., https://medverse.vercel.app).
+
+      # CORS allowlist — comma-separated. Include your frontend
+      # domain(s) e.g.
+      # https://medverse.vercel.app,https://medverse-staging.vercel.app
+      # The CORS regex in app.py also auto-allows localhost / LAN IPs
+      # for dev; this var only matters for production frontends.
       - key: MEDVERSE_CORS_ORIGINS
         sync: false
+
+  # ── Postgres (Render-managed) ───────────────────────────────────────
+  # Comment out if you'd rather BYO Postgres (Timescale Cloud, Neon,
+  # Supabase, etc.) and just paste the connection string into
+  # MEDVERSE_DB_URL above. Render's free PG expires after 90 days; the
+  # paid Starter is $7/mo and covers the snapshot + alerts + ledger
+  # write rate this app actually generates.
+databases:
+  - name: medverse-pg
+    plan: starter
+    databaseName: medverse
+    user: medverse

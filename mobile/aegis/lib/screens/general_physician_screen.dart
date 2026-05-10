@@ -4,6 +4,9 @@ import 'package:provider/provider.dart';
 import 'package:image_picker/image_picker.dart';
 
 import '../models/vest_data_model.dart';
+import '../services/api_service.dart';
+import '../services/auth_service.dart';
+import '../widgets/ai_assessment_card.dart';
 import '../widgets/system_summary.dart';
 import '../theme.dart';
 
@@ -38,14 +41,32 @@ class _GeneralPhysicianScreenState extends State<GeneralPhysicianScreen> {
   }
 
   Future<void> _sendToApexAgent() async {
+    final file = _imageFile;
+    if (file == null) return;
     setState(() => _isUploading = true);
-    // TODO: Implement actual upload to backend logic here
-    await Future.delayed(const Duration(seconds: 2));
-    setState(() => _isUploading = false);
-    if (mounted) {
+    try {
+      // Real backend: POST /api/upload-lab-results — multipart upload
+      // that returns OCR-extracted patient data the agent loop picks
+      // up on its next pass. Replaces the previous 2 s mock delay.
+      final auth = context.read<AuthService>();
+      final result = await ApiService.uploadLabResults(file.path, auth: auth);
+      if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Visual evidence sent to Apex Synthesizer for holistic review.')),
+        SnackBar(
+          content: Text(
+            result == null
+                ? 'Upload failed — check backend connection in Settings.'
+                : 'Sent. Extracted: ${(result['extracted_data'] ?? {}).toString().substring(0, 60)}…',
+          ),
+        ),
       );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Upload failed: $e')),
+      );
+    } finally {
+      if (mounted) setState(() => _isUploading = false);
     }
   }
 
@@ -65,36 +86,11 @@ class _GeneralPhysicianScreenState extends State<GeneralPhysicianScreen> {
           _buildCameraSection(),
           const SizedBox(height: 24),
 
-          const Text(
-            'LATEST TRIAGE REPORT',
-            style: TextStyle(color: MedVerseTheme.textMuted, fontSize: 12, fontWeight: FontWeight.bold, letterSpacing: 1.5),
-          ),
-          const SizedBox(height: 12),
-          Container(
-            padding: const EdgeInsets.all(16.0),
-            decoration: BoxDecoration(
-              color: MedVerseTheme.surfaceHighlight.withOpacity(0.5),
-              borderRadius: BorderRadius.circular(16),
-              border: Border.all(color: MedVerseTheme.primary.withOpacity(0.3)),
-            ),
-            child: const Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    Icon(Icons.check_circle_rounded, color: MedVerseTheme.primary, size: 20),
-                    SizedBox(width: 8),
-                    Text('Stable Status', style: TextStyle(color: MedVerseTheme.primary, fontWeight: FontWeight.bold, fontSize: 16)),
-                  ],
-                ),
-                SizedBox(height: 12),
-                Text(
-                  "The patient's continuous 10Hz telemetry indicates nominal cardiovascular baseline operation. The Respiratory rhythms exhibit steady pneumography, and SpO2 is holding identically at nominal levels.\n\nNo immediate physical interventions or specialized triages are required at this very second.",
-                  style: TextStyle(color: MedVerseTheme.textMain, height: 1.5),
-                ),
-              ],
-            ),
-          ),
+          // Live AI triage — fetches a holistic GP-perspective
+          // assessment from `/api/agent/ask` against the current
+          // telemetry snapshot. Replaces the previous static "Stable
+          // Status" placeholder text.
+          const AiAssessmentCard(specialty: 'general physician'),
         ],
       ),
     );
@@ -104,9 +100,9 @@ class _GeneralPhysicianScreenState extends State<GeneralPhysicianScreen> {
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        color: MedVerseTheme.surfaceHighlight.withOpacity(0.3),
+        color: MedVerseTheme.surfaceHighlight.withValues(alpha: 0.3),
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: MedVerseTheme.primary.withOpacity(0.2)),
+        border: Border.all(color: MedVerseTheme.primary.withValues(alpha: 0.2)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,

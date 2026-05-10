@@ -2,8 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../models/vest_data_model.dart';
+import '../widgets/ai_assessment_card.dart';
 import '../widgets/biometric_card.dart';
-import '../widgets/interpretation_card.dart';
 import '../theme.dart';
 
 class NeurologyScreen extends StatelessWidget {
@@ -31,13 +31,7 @@ class NeurologyScreen extends StatelessWidget {
             ],
           ),
           const SizedBox(height: 24),
-          const Text('LATEST A.I. ANALYSIS', style: TextStyle(color: MedVerseTheme.textMuted, fontSize: 12, fontWeight: FontWeight.bold, letterSpacing: 1.5)),
-          const SizedBox(height: 12),
-          const InterpretationCard(
-            title: "Neurological & Balance Assessment",
-            icon: Icons.psychology_rounded,
-            content: "**Observations:**\n- **IMU Posture**: Alignment is upright.\n- **Motion State**: Static / Minimal noise.\n- **Fall Risk Score**: Extremely low probability.\n\n**Conclusion**:\nMotor control and vestibular balance are stable. No tremors or sudden orthostatic anomalies detected.",
-          ),
+          const AiAssessmentCard(specialty: 'neurology'),
         ],
       ),
     );

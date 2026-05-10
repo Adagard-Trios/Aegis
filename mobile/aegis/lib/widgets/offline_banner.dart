@@ -26,7 +26,7 @@ class OfflineBanner extends StatelessWidget {
     final anomaly = context.watch<EdgeAnomalyService?>();
     final queue = context.watch<SyncQueueService?>();
 
-    final isOffline = vest != null && !vest.connected;
+    final isOffline = vest != null && !vest.isConnected;
     final hasAnomaly = anomaly?.active == true;
     final queueDepth = queue?.length ?? 0;
     final cacheDepth = cache?.length ?? 0;

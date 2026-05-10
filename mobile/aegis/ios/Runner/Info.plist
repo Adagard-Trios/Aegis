@@ -6,6 +6,14 @@
 	<string>Aegis needs camera access to capture clinical images of skin symptoms for AI agent analysis.</string>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>Aegis needs photo library access to upload clinical images.</string>
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>Aegis connects to your vest and abdomen monitor over Bluetooth Low Energy to display live vital signs.</string>
+	<key>NSBluetoothPeripheralUsageDescription</key>
+	<string>Aegis connects to your vest and abdomen monitor over Bluetooth Low Energy to display live vital signs.</string>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>bluetooth-central</string>
+	</array>
 	<key>CADisableMinimumFrameDurationOnPhone</key>
 	<true/>
 	<key>CFBundleDevelopmentRegion</key>

@@ -44,6 +44,18 @@ dependencies:
   image_picker: ^1.1.2
   flutter_secure_storage: ^9.0.0
 
+  # ── Direct-BLE architecture (mobile owns the radio) ──
+  # flutter_blue_plus: vest + abdomen monitor scan / connect / notify subscriptions.
+  # permission_handler: Android 12+ BLUETOOTH_SCAN/CONNECT runtime requests.
+  # fftea: Cooley-Tukey FFT used by LocalDspService (HR estimation).
+  flutter_blue_plus: ^1.32.12
+  permission_handler: ^11.3.1
+  fftea: ^1.5.0
+
+  # ── Material 3 redesign (navigation + about screen) ──
+  go_router: ^14.6.0          # typed routing + ShellRoute for persistent NavigationBar
+  package_info_plus: ^8.1.0   # app version on the About screen
+
 dev_dependencies:
   flutter_test:
     sdk: flutter
@@ -66,10 +78,11 @@ flutter:
   # the material Icons class.
   uses-material-design: true
 
-  # To add assets to your application, add an assets section, like this:
-  # assets:
-  #   - images/a_dot_burr.jpeg
-  #   - images/a_dot_ham.jpeg
+  # 3D digital-twin model loaded by the DigitalTwinScreen via
+  # model_viewer_plus. Sourced from frontend/public/human.glb so the
+  # mobile + web builds share the same avatar.
+  assets:
+    - assets/models/human.glb
 
   # An image asset can refer to one or more resolution-specific "variants", see
   # https://flutter.dev/to/resolution-aware-images

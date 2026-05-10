@@ -48,7 +48,7 @@ class LiveWaveform extends StatelessWidget {
                       return Center(
                         child: Text(
                           'Waiting for data...',
-                          style: TextStyle(color: MedVerseTheme.textMuted.withOpacity(0.5)),
+                          style: TextStyle(color: MedVerseTheme.textMuted.withValues(alpha: 0.5)),
                         ),
                       );
                     }
@@ -115,7 +115,7 @@ class _WaveformPainter extends CustomPainter {
 
     // Glow effect
     final glowPaint = Paint()
-      ..color = color.withOpacity(0.3)
+      ..color = color.withValues(alpha: 0.3)
       ..strokeWidth = 6.0
       ..style = PaintingStyle.stroke
       ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 3.0);

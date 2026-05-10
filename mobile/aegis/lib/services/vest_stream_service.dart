@@ -1,122 +1,108 @@
 import 'dart:async';
-import 'dart:convert';
-import 'dart:math';
-import 'package:http/http.dart' as http;
+
 import 'package:flutter/foundation.dart';
+
+import '../ble/ble_connection_supervisor.dart';
 import '../models/vest_data_model.dart';
-import 'api_config.dart';
+import '../pipeline/ble_telemetry_source.dart';
+import '../pipeline/sse_telemetry_source.dart';
+import '../pipeline/telemetry_source.dart';
 import 'auth_service.dart';
-import 'local_cache_service.dart';
 import 'edge_anomaly_service.dart';
+import 'local_cache_service.dart';
 import 'sync_queue_service.dart';
 
+/// Telemetry plumbing — owns whichever [TelemetrySource] is right for
+/// the build target, drains its snapshots, and fans them out to:
+///   - the [VestDataModel] (UI bindings)
+///   - the Phase 4.3 services (cache + edge anomaly + sync queue)
+///   - any caller of [latest] (e.g. SnapshotUploader, agent body)
+///
+/// Source selection:
+///   - Web  → [SseTelemetrySource]  (no Bluetooth)
+///   - Mobile (default) → [BleTelemetrySource]  (phone owns BLE)
 class VestStreamService {
   final VestDataModel model;
   final AuthService? auth;
-  // Phase 4 IoMT additions — optional services. Passing them in lets the
-  // app keep using VestStreamService directly when offline-mode + edge
-  // alerts aren't needed (e.g. tests, mock-data demos).
   final LocalCacheService? cache;
   final EdgeAnomalyService? anomaly;
   final SyncQueueService? syncQueue;
-  http.Client? _client;
+
+  /// The BLE supervisor that owns the vest + abdomen device services.
+  /// Required on mobile (where the Sensors screen drives it manually);
+  /// ignored on web (the SSE source doesn't need a radio).
+  final BleConnectionSupervisor? supervisor;
+
+  late final TelemetrySource _source;
+  StreamSubscription<Map<String, dynamic>>? _snapSub;
   bool _isListening = false;
-  int _reconnectAttempts = 0;
   bool _wasConnected = false;
 
-  // Set to true to use local 10Hz mock waveforms without connecting to the Python backend
-  bool useMockData = true;
-  Timer? _mockTimer;
-  double _phase = 0;
+  /// Latest snapshot the source has emitted. Used by `SnapshotUploader`
+  /// and `ApiService` agent calls to attach the freshest local data.
+  Map<String, dynamic>? get latestSnapshot => _source.latest;
 
+  /// Allow tests / web demos to inject a different source.
+  /// On mobile builds the constructor picks BLE by default; pass
+  /// `forceSse: true` to fall back to SSE explicitly.
   VestStreamService({
     required this.model,
     this.auth,
     this.cache,
     this.anomaly,
     this.syncQueue,
-  });
-
-  String get baseUrl => ApiConfig.baseUrl;
-
-  void startStream() async {
-    if (_isListening) return;
-    _isListening = true;
-    _reconnectAttempts = 0;
-
-    if (useMockData) {
-      _startMockStream();
+    this.supervisor,
+    TelemetrySource? source,
+    bool forceSse = false,
+  }) {
+    if (source != null) {
+      _source = source;
+    } else if (kIsWeb || forceSse) {
+      _source = SseTelemetrySource(auth: auth);
     } else {
-      _connect();
+      assert(supervisor != null,
+          'BleConnectionSupervisor required on mobile builds');
+      _source = BleTelemetrySource(supervisor: supervisor!);
     }
   }
 
-  void stopStream() {
+  void startStream() {
+    if (_isListening) return;
+    _isListening = true;
+    _snapSub = _source.snapshots.listen(_handle);
+    _source.start();
+    model.updateConnectionStatus(false, 'Connecting...');
+  }
+
+  Future<void> stopStream() async {
     _isListening = false;
-    _client?.close();
-    _client = null;
-    _mockTimer?.cancel();
+    await _snapSub?.cancel();
+    _snapSub = null;
+    await _source.stop();
     model.updateConnectionStatus(false, 'Disconnected');
   }
 
-  void _startMockStream() {
-    model.updateConnectionStatus(true, 'Connected (MOCK DATA)');
-    
-    // Simulate a 10Hz SSE stream using Timer.periodic (100ms)
-    _mockTimer = Timer.periodic(const Duration(milliseconds: 100), (timer) {
-      if (!_isListening) {
-        timer.cancel();
-        return;
-      }
+  void _handle(Map<String, dynamic> snapshot) {
+    if (!_isListening) return;
+    final live = _source.isLive;
+    final label = live
+        ? (snapshot['connection']?['using_mock'] == true
+            ? 'Connected (MOCK)'
+            : 'Connected (LIVE)')
+        : 'Reconnecting...';
+    model.updateConnectionStatus(live, label);
+    model.updateFromStream(snapshot);
+    _onSnapshot(snapshot);
 
-      // Generate 5-10 samples per 100ms packet to create smooth wave animations
-      List<double> ecgChunk = [];
-      List<double> ppgChunk = [];
-      List<double> rspChunk = [];
-      List<double> fhrChunk = [];
-
-      for (int i = 0; i < 5; i++) {
-        _phase += 0.15;
-        
-        // Complex mocked ECG shape: small p wave, QRS spike, t wave
-        double ecgVal = sin(_phase) * 0.2 + // Baseline wander / T-wave
-            (sin(_phase * 2) * 0.1) + // P wave
-            ((_phase % (pi * 2)) < 0.2 ? 2.5 : 0.0) - // R spike positive
-            ((_phase % (pi * 2)) > 0.2 && (_phase % (pi * 2)) < 0.3 ? 0.8 : 0.0); // S spike negative
-
-        ecgChunk.add(ecgVal);
-        ppgChunk.add(sin(_phase * 0.8 + 1) * 0.6 + 0.5); // PPG resembles blood volume pressure
-        rspChunk.add(sin(_phase * 0.2) * 1.2); // Slower respiratory wave
-        fhrChunk.add(sin(_phase * 1.5) * 0.2 + 0.8); // FHR doppler mock
-      }
-
-      // Low frequency metrics simulated alongside
-      final mockData = {
-        'ecg_raw': ecgChunk,
-        'ppg_raw': ppgChunk,
-        'resp_raw': rspChunk,
-        'fhr_raw': fhrChunk, // Appears on Obstetrics Screen
-        
-        'heart_rate': 72 + (sin(_phase * 0.05) * 4).toInt(),
-        'spo2': 98 + (sin(_phase * 0.01) * 1).toInt(),
-        'temperature': 36.6 + (sin(_phase * 0.02) * 0.3),
-        'respiratory_rate': 16 + (cos(_phase * 0.05) * 2).toInt(),
-        
-        'blood_pressure': {
-          'systolic': 118 + (sin(_phase * 0.05) * 5),
-          'diastolic': 78 + (cos(_phase * 0.05) * 4)
-        },
-        'posture': (sin(_phase * 0.02) > 0) ? 'Sitting' : 'Standing',
-      };
-
-      model.updateFromStream(mockData);
-      _onSnapshot(mockData);
-    });
+    if (live && !_wasConnected) {
+      _wasConnected = true;
+      unawaited(_flushSyncQueue());
+    } else if (!live) {
+      _wasConnected = false;
+    }
   }
 
-  /// Phase 4 hook: cache the snapshot, run the edge anomaly detector,
-  /// and (when offline) enqueue for later sync. Cheap to call on the
-  /// hot path — each service is an in-memory shim.
+  /// Phase 4 hook — preserved verbatim from the SSE-era implementation.
   void _onSnapshot(Map<String, dynamic> snapshot) {
     cache?.push(snapshot);
     anomaly?.ingest(snapshot);
@@ -125,9 +111,6 @@ class VestStreamService {
     }
   }
 
-  /// Drain anything we cached during a disconnect. Replays each into
-  /// the local model so the UI fills in missing samples; backend-side
-  /// sync would happen here too once that path is wired.
   Future<void> _flushSyncQueue() async {
     if (syncQueue == null || syncQueue!.length == 0) return;
     try {
@@ -139,55 +122,13 @@ class VestStreamService {
     }
   }
 
-  Future<void> _connect() async {
-    while (_isListening) {
-      model.updateConnectionStatus(false, 'Connecting...');
-      try {
-        _client = http.Client();
-        final uri = Uri.parse('$baseUrl/stream');
-        final streamUrl = auth != null ? auth!.appendToken(uri) : uri.toString();
-        final request = http.Request('GET', Uri.parse(streamUrl));
-        if (auth != null) request.headers.addAll(auth!.authHeaders(extra: {}));
-        final response = await _client!.send(request);
+  /// Direct access to the underlying source — used by injection points
+  /// like the Obstetrics screen mode picker (writes mode characteristic
+  /// on the abdomen device) and by SnapshotUploader.
+  TelemetrySource get source => _source;
 
-        if (response.statusCode == 200) {
-          model.updateConnectionStatus(true, 'Connected (LIVE)');
-          _reconnectAttempts = 0;
-          if (!_wasConnected) {
-            // Just came back online — drain anything we queued offline.
-            _wasConnected = true;
-            _flushSyncQueue();
-          }
-
-          await response.stream
-              .transform(utf8.decoder)
-              .transform(const LineSplitter())
-              .forEach((line) {
-            if (!_isListening) return;
-            if (line.startsWith('data: ')) {
-              final jsonStr = line.substring(6).trim();
-              if (jsonStr.isEmpty) return;
-              try {
-                final Map<String, dynamic> data = jsonDecode(jsonStr);
-                model.updateFromStream(data);
-                _onSnapshot(data);
-              } catch (e) {
-                debugPrint("JSON Parse Error: $e");
-              }
-            }
-          });
-        }
-      } catch (e) {
-        debugPrint('Stream error: $e');
-      }
-
-      if (_isListening) {
-        _wasConnected = false;
-        _reconnectAttempts++;
-        model.updateConnectionStatus(false, 'Reconnecting ($_reconnectAttempts)...');
-        final delay = (_reconnectAttempts * 1000).clamp(1000, 5000);
-        await Future.delayed(Duration(milliseconds: delay));
-      }
-    }
+  void dispose() {
+    stopStream();
+    _source.dispose();
   }
 }

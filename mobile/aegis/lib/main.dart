@@ -1,18 +1,31 @@
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
 
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+
 import 'theme.dart';
-import 'main_layout.dart';
-import 'screens/login_screen.dart';
 import 'models/vest_data_model.dart';
+import 'navigation/app_routes.dart';
+import 'services/api_config.dart';
 import 'services/vest_stream_service.dart';
 import 'services/auth_service.dart';
 import 'services/local_cache_service.dart';
 import 'services/edge_anomaly_service.dart';
 import 'services/sync_queue_service.dart';
+import 'services/snapshot_uploader.dart';
+import 'services/ai_assessment_repository.dart';
+import 'ble/ble_connection_supervisor.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // ── Load persisted user preferences before anything reads them ────
+  // - Backend URL override (Settings → Connection)
+  // - Reduced-motion + high-contrast + large-tap-target (Settings →
+  //   Accessibility) — mirrored to the theme module statics so the
+  //   M3 theme factory + transition builders pick them up immediately.
+  await _restorePreferences();
 
   final auth = AuthService();
   await auth.load();
@@ -25,15 +38,42 @@ void main() async {
   final localCache = LocalCacheService();
   final edgeAnomaly = EdgeAnomalyService();
   final syncQueue = SyncQueueService();
+
+  // BLE supervisor — owns the vest + abdomen device services. The
+  // Sensors screen drives manual scan / connect through it; the
+  // BleTelemetrySource subscribes to its event streams for snapshots.
+  final bleSupervisor = BleConnectionSupervisor();
+
   final vestStreamService = VestStreamService(
     model: vestDataModel,
     auth: auth,
     cache: localCache,
     anomaly: edgeAnomaly,
     syncQueue: syncQueue,
+    supervisor: bleSupervisor,
   );
-  // Start the background stream connection immediately
+  // Start the background stream connection immediately. On mobile this
+  // boots the BleConnectionSupervisor (scans + connects to vest +
+  // abdomen). On web it falls back to the FastAPI /stream SSE endpoint.
   vestStreamService.startStream();
+
+  // Push the mobile-built snapshot to the backend every 15 s so the
+  // agent loop / FHIR exports / alerts evaluator have continuous data.
+  // No-ops on web — the backend is the BLE master in the web build.
+  final snapshotUploader = SnapshotUploader(
+    stream: vestStreamService,
+    auth: auth,
+  );
+  snapshotUploader.start();
+
+  // Per-specialty AI assessment cache. AiAssessmentCard widgets (one
+  // per specialist screen) read from this; the repository debounces
+  // re-fetches based on telemetry drift so we don't burn Groq tokens
+  // on every tab switch.
+  final aiRepo = AiAssessmentRepository(
+    stream: vestStreamService,
+    auth: auth,
+  );
 
   runApp(
     MultiProvider(
@@ -41,43 +81,86 @@ void main() async {
         ChangeNotifierProvider.value(value: auth),
         ChangeNotifierProvider.value(value: vestDataModel),
         Provider.value(value: vestStreamService),
+        Provider.value(value: snapshotUploader),
         ChangeNotifierProvider.value(value: localCache),
         ChangeNotifierProvider.value(value: edgeAnomaly),
         ChangeNotifierProvider.value(value: syncQueue),
+        // BLE supervisor — exposed so SensorsScreen can call
+        // supervisor.vest.startScan() / connectTo() / disconnect().
+        ChangeNotifierProvider.value(value: bleSupervisor),
+        // AI assessment repository — backs AiAssessmentCard.
+        ChangeNotifierProvider.value(value: aiRepo),
       ],
       child: const AegisApp(),
     ),
   );
 }
 
-class AegisApp extends StatelessWidget {
+class AegisApp extends StatefulWidget {
   const AegisApp({super.key});
 
   @override
+  State<AegisApp> createState() => _AegisAppState();
+}
+
+class _AegisAppState extends State<AegisApp> {
+  /// Built once and held for the lifetime of the app. GoRouter keeps
+  /// internal state (current route, navigator stacks per branch) so we
+  /// must not rebuild it on hot-reload — `late final` + a single
+  /// initialiser does the right thing.
+  late final GoRouter _router = buildAppRouter();
+
+  @override
+  void dispose() {
+    _router.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
-    return MaterialApp(
+    return MaterialApp.router(
       title: 'MedVerse IoT Clinical Dashboard',
       debugShowCheckedModeBanner: false,
       theme: MedVerseTheme.darkTheme,
-      home: const _AuthGate(),
+      // Router-driven navigation:
+      //   - `appRouter` defines the StatefulShellRoute with five
+      //     branches (Dashboard / Specialists / 3D Twin / Chat /
+      //     Settings) all hosted by AppShell + its M3 NavigationBar.
+      //   - PermissionGate wraps the shell builder inside the router
+      //     config so first-run BLE permissions are still requested
+      //     once, before any sub-route mounts the BLE service.
+      //   - Auth is disabled in the mobile build — the AuthService
+      //     stays in the provider tree as an empty shim so existing
+      //     `auth.authHeaders()` callers compile, but no login screen
+      //     gates the router.
+      routerConfig: _router,
     );
   }
 }
 
-/// Presents [LoginScreen] when no token is stored; otherwise the dashboard.
+/// Restores user-set preferences from secure storage on cold start.
 ///
-/// Auth is opt-in at the backend (`MEDVERSE_AUTH_ENABLED`). The login
-/// call still works when auth is off — it just returns a token that the
-/// backend accepts but doesn't require. Set
-/// [AuthGateMode.requireLogin] to `false` if you want to bypass the
-/// gate entirely for unauthenticated demos.
-class _AuthGate extends StatelessWidget {
-  const _AuthGate();
-
-  @override
-  Widget build(BuildContext context) {
-    final auth = context.watch<AuthService>();
-    if (auth.isAuthenticated) return const MainLayout();
-    return const LoginScreen();
-  }
+/// Each preference is mirrored to a static field on the theme / API
+/// modules so widgets reading them on first frame see the saved state
+/// immediately (no Provider plumbing needed for these primitives).
+///
+/// Failures here are non-fatal — secure storage may be unavailable on
+/// fresh installs / emulator quirks, in which case the defaults stand.
+Future<void> _restorePreferences() async {
+  const storage = FlutterSecureStorage();
+  try {
+    final url = await storage.read(key: 'aegis.backend_url_override');
+    if (url != null && url.trim().isNotEmpty) {
+      ApiConfig.setOverride(url.trim());
+    }
+  } catch (_) {/* non-fatal */}
+  try {
+    MedverseMotion.reducedMotionOverride =
+        (await storage.read(key: 'aegis.a11y.reduced_motion')) == 'true';
+    MedverseA11y.highContrastOverride =
+        (await storage.read(key: 'aegis.a11y.high_contrast')) == 'true';
+    final largeTaps =
+        (await storage.read(key: 'aegis.a11y.large_taps')) == 'true';
+    MedverseA11y.minTapTarget = largeTaps ? 56.0 : 48.0;
+  } catch (_) {/* non-fatal */}
 }

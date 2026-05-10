@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'package:flutter/foundation.dart';
 
+import '../ble/ble_constants.dart';
 import 'api_config.dart';
 import 'auth_service.dart';
 
@@ -82,6 +83,130 @@ class ApiService {
       return null;
     } catch (e) {
       debugPrint('Error fetching history: $e');
+      return null;
+    }
+  }
+
+  // ── Agent + digital-twin calls ───────────────────────────────────
+  // These attach the freshest local snapshot in the body so the backend
+  // graph runs against current data. The X-Aegis-Source header tells
+  // the backend that mobile is the BLE master and that its own BLE
+  // thread should back off for ~60s.
+
+  static Map<String, String> _agentHeaders(AuthService? auth) {
+    return {
+      ..._headers(auth),
+      BleTuning.mobileSourceHeader: BleTuning.mobileSourceValue,
+    };
+  }
+
+  /// POST /api/agent/ask — single-specialty Q&A.
+  /// Backend pydantic schema names this field `message` — keep parity.
+  static Future<Map<String, dynamic>?> agentAsk({
+    required String specialty,
+    required String message,
+    Map<String, dynamic>? snapshot,
+    AuthService? auth,
+  }) async {
+    try {
+      final body = <String, dynamic>{
+        'specialty': specialty,
+        'message': message,
+        'snapshot': ?snapshot,
+      };
+      final response = await http.post(
+        Uri.parse('$baseUrl/api/agent/ask'),
+        headers: _agentHeaders(auth),
+        body: jsonEncode(body),
+      );
+      if (response.statusCode == 200) {
+        return jsonDecode(response.body) as Map<String, dynamic>;
+      }
+      return null;
+    } catch (e) {
+      debugPrint('agentAsk error: $e');
+      return null;
+    }
+  }
+
+  /// POST /api/agent/run-now — fan-out across all specialty experts.
+  static Future<Map<String, dynamic>?> agentRunNow({
+    Map<String, dynamic>? snapshot,
+    AuthService? auth,
+  }) async {
+    try {
+      final body = <String, dynamic>{
+        'snapshot': ?snapshot,
+      };
+      final response = await http.post(
+        Uri.parse('$baseUrl/api/agent/run-now'),
+        headers: _agentHeaders(auth),
+        body: jsonEncode(body),
+      );
+      if (response.statusCode == 200) {
+        return jsonDecode(response.body) as Map<String, dynamic>;
+      }
+      return null;
+    } catch (e) {
+      debugPrint('agentRunNow error: $e');
+      return null;
+    }
+  }
+
+  /// POST /api/agent/complex-diagnosis — collaborative diagnosis graph.
+  static Future<Map<String, dynamic>?> complexDiagnosis({
+    String patientId = 'medverse-demo-patient',
+    Map<String, dynamic>? snapshot,
+    AuthService? auth,
+  }) async {
+    try {
+      final body = <String, dynamic>{
+        'patient_id': patientId,
+        'snapshot': ?snapshot,
+      };
+      final response = await http.post(
+        Uri.parse('$baseUrl/api/agent/complex-diagnosis'),
+        headers: _agentHeaders(auth),
+        body: jsonEncode(body),
+      );
+      if (response.statusCode == 200) {
+        return jsonDecode(response.body) as Map<String, dynamic>;
+      }
+      return null;
+    } catch (e) {
+      debugPrint('complexDiagnosis error: $e');
+      return null;
+    }
+  }
+
+  /// POST /api/digital-twin/scenario — what-if forward simulation.
+  static Future<Map<String, dynamic>?> digitalTwinScenario({
+    required String twin,
+    required Map<String, dynamic> inputs,
+    int horizonMin = 30,
+    String patientId = 'medverse-demo-patient',
+    Map<String, dynamic>? snapshot,
+    AuthService? auth,
+  }) async {
+    try {
+      final body = <String, dynamic>{
+        'patient_id': patientId,
+        'twin': twin,
+        'inputs': inputs,
+        'horizon_min': horizonMin,
+        'snapshot': ?snapshot,
+      };
+      final response = await http.post(
+        Uri.parse('$baseUrl/api/digital-twin/scenario'),
+        headers: _agentHeaders(auth),
+        body: jsonEncode(body),
+      );
+      if (response.statusCode == 200) {
+        return jsonDecode(response.body) as Map<String, dynamic>;
+      }
+      return null;
+    } catch (e) {
+      debugPrint('digitalTwinScenario error: $e');
       return null;
     }
   }

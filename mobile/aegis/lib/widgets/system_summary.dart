@@ -45,8 +45,8 @@ class SystemSummary extends StatelessWidget {
                       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
                       decoration: BoxDecoration(
                         color: model.isConnected
-                            ? MedVerseTheme.statusNormal.withOpacity(0.2)
-                            : MedVerseTheme.statusWarning.withOpacity(0.2),
+                            ? MedVerseTheme.statusNormal.withValues(alpha: 0.2)
+                            : MedVerseTheme.statusWarning.withValues(alpha: 0.2),
                         borderRadius: BorderRadius.circular(12),
                         border: Border.all(
                           color: model.isConnected

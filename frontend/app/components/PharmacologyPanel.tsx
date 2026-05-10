@@ -288,8 +288,14 @@ export function PharmacologyPanel() {
                 borderRadius: 6,
                 fontSize: 11,
               }}
-              labelFormatter={(t: number) => `t = ${t.toFixed(1)}s`}
-              formatter={(v: number) => v.toFixed(3)}
+              labelFormatter={(t: unknown) => {
+                const n = typeof t === "number" ? t : Number(t);
+                return Number.isFinite(n) ? `t = ${n.toFixed(1)}s` : "";
+              }}
+              formatter={(v: unknown) => {
+                const n = typeof v === "number" ? v : Number(v);
+                return Number.isFinite(n) ? n.toFixed(3) : String(v ?? "");
+              }}
             />
             <ReferenceLine y={0} stroke="#475569" strokeDasharray="2 2" />
             <Line

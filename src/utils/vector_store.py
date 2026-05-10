@@ -22,7 +22,13 @@ _EMBEDDINGS_AVAILABLE = False
 _embeddings = None
 _embedding_model_name: Optional[str] = None
 _collections: Dict[str, Any] = {}
-_PERSIST_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "chroma_data")
+# Where Chroma writes its sqlite + parquet shards. Override with
+# CHROMA_PERSIST_DIR when running on a host that has a different
+# writable mount (Render's persistent disk lands at /var/medverse/chroma).
+_PERSIST_DIR = os.environ.get(
+    "CHROMA_PERSIST_DIR",
+    os.path.join(os.path.dirname(__file__), "..", "..", "chroma_data"),
+)
 
 
 def _embedding_suffix() -> str:

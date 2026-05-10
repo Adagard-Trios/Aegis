@@ -2,7 +2,12 @@ import 'package:flutter/foundation.dart';
 
 class VestDataModel extends ChangeNotifier {
   // High-frequency Waveform Queues (ValueNotifiers prevent massive UI rebuilds)
+  // ecgData = Lead II (kept for backwards compat); the per-lead notifiers
+  // power the multi-lead cardiology graph (Einthoven L1 / L2 / L3).
   final ValueNotifier<List<double>> ecgData = ValueNotifier([]);
+  final ValueNotifier<List<double>> ecgLead1Data = ValueNotifier([]);
+  final ValueNotifier<List<double>> ecgLead2Data = ValueNotifier([]);
+  final ValueNotifier<List<double>> ecgLead3Data = ValueNotifier([]);
   final ValueNotifier<List<double>> ppgData = ValueNotifier([]);
   final ValueNotifier<List<double>> rspData = ValueNotifier([]);
   final ValueNotifier<List<double>> fhrData = ValueNotifier([]);
@@ -54,98 +59,165 @@ class VestDataModel extends ChangeNotifier {
     }
   }
 
+  // ── Type-safe extractors ─────────────────────────────────────
+  // Defensive helpers — return null when the value is the wrong shape
+  // (e.g. a Map where a num is expected) instead of throwing. Everything
+  // in updateFromStream goes through these so a single malformed field
+  // can't crash the whole stream.
+
+  static int? _asInt(dynamic v) {
+    if (v is num) return v.toInt();
+    if (v is bool) return v ? 1 : 0;
+    if (v is String) return int.tryParse(v);
+    return null;
+  }
+
+  static double? _asDouble(dynamic v) {
+    if (v is num) return v.toDouble();
+    if (v is String) return double.tryParse(v);
+    return null;
+  }
+
+  static Map? _asMap(dynamic v) => v is Map ? v : null;
+
+  static List? _asList(dynamic v) => v is List ? v : null;
+
+  /// Append a fresh batch of samples to a rolling 500-element waveform
+  /// notifier. Drops the oldest samples when the buffer overflows so
+  /// the widget always renders the most-recent ~500 ticks.
+  void _appendWaveform(ValueNotifier<List<double>> sink, List src) {
+    final samples = src.map((e) => _asDouble(e) ?? 0.0).toList();
+    if (samples.isEmpty) return;
+    final updated = List<double>.from(sink.value)..addAll(samples);
+    if (updated.length > 500) {
+      updated.removeRange(0, updated.length - 500);
+    }
+    sink.value = updated;
+  }
+
   void updateFromStream(Map<String, dynamic> data) {
+    try {
+      _updateFromStream(data);
+    } catch (e, st) {
+      // Belt-and-suspenders: even if a future schema change introduces a
+      // shape we didn't anticipate, the BLE stream keeps flowing instead
+      // of throwing every tick.
+      debugPrint('VestDataModel.updateFromStream skipped tick: $e\n$st');
+    }
+  }
+
+  void _updateFromStream(Map<String, dynamic> data) {
     bool shouldNotify = false;
 
-    // Fast-path for waveforms: append arrays directly to the ValueNotifiers
-    if (data.containsKey('ecg_raw')) {
-      final List<double> newEcg = (data['ecg_raw'] as List).map((e) => (e as num).toDouble()).toList();
-      final updatedEcg = List<double>.from(ecgData.value)..addAll(newEcg);
-      if (updatedEcg.length > 500) updatedEcg.removeRange(0, updatedEcg.length - 500);
-      ecgData.value = updatedEcg;
+    // Fast-path for waveforms: append arrays directly to the ValueNotifiers.
+    // Lead II legacy alias (drives the single-trace ECG widget).
+    final ecgRaw = _asList(data['ecg_raw']);
+    if (ecgRaw != null) {
+      _appendWaveform(ecgData, ecgRaw);
     }
+    // Per-lead streams (drive the multi-lead overlay).
+    final lead1 = _asList(data['ecg_lead1_raw']);
+    if (lead1 != null) _appendWaveform(ecgLead1Data, lead1);
+    final lead2 = _asList(data['ecg_lead2_raw']);
+    if (lead2 != null) _appendWaveform(ecgLead2Data, lead2);
+    final lead3 = _asList(data['ecg_lead3_raw']);
+    if (lead3 != null) _appendWaveform(ecgLead3Data, lead3);
+    // Fetal heart-tone CTG-style trace from the AbdomenMonitor mics.
+    final fhr = _asList(data['fhr_raw']);
+    if (fhr != null) _appendWaveform(fhrData, fhr);
 
-    if (data.containsKey('ppg_raw')) {
-      final List<double> newPpg = (data['ppg_raw'] as List).map((e) => (e as num).toDouble()).toList();
+    final ppgRaw = _asList(data['ppg_raw']);
+    if (ppgRaw != null) {
+      final List<double> newPpg = ppgRaw.map((e) => _asDouble(e) ?? 0.0).toList();
       final updatedPpg = List<double>.from(ppgData.value)..addAll(newPpg);
       if (updatedPpg.length > 500) updatedPpg.removeRange(0, updatedPpg.length - 500);
       ppgData.value = updatedPpg;
     }
 
-    if (data.containsKey('resp_raw')) {
-      final List<double> newRsp = (data['resp_raw'] as List).map((e) => (e as num).toDouble()).toList();
+    final rspRaw = _asList(data['resp_raw']);
+    if (rspRaw != null) {
+      final List<double> newRsp = rspRaw.map((e) => _asDouble(e) ?? 0.0).toList();
       final updatedRsp = List<double>.from(rspData.value)..addAll(newRsp);
       if (updatedRsp.length > 500) updatedRsp.removeRange(0, updatedRsp.length - 500);
       rspData.value = updatedRsp;
     }
 
-    // Detailed Biometrics parsing updates the standard state
-    if (data.containsKey('vitals') && data['vitals'] is Map) {
-      final vitals = data['vitals'];
-      heartRate = (vitals['heart_rate'] as num?)?.toInt() ?? heartRate;
-      spO2 = (vitals['spo2'] as num?)?.toInt() ?? spO2;
-      respiratoryRate = (vitals['breathing_rate'] as num?)?.toInt() ?? respiratoryRate;
-      hrvRmssd = (vitals['hrv_rmssd'] as num?)?.toDouble() ?? hrvRmssd;
-      perfusionIndex = (vitals['perfusion_index'] as num?)?.toDouble() ?? perfusionIndex;
-      shouldNotify = true;
-    }
-    
-    // Fallback if structured differently by mock stream vs real stream
-    if (data.containsKey('heart_rate') && data['heart_rate'] != heartRate) {
-      heartRate = (data['heart_rate'] as num).toInt();
-      shouldNotify = true;
-    }
-    if (data.containsKey('temperature') && data['temperature'] != temperature) {
-      temperature = (data['temperature'] as num).toDouble();
+    // Vitals block (canonical structured shape).
+    final vitals = _asMap(data['vitals']);
+    if (vitals != null) {
+      heartRate = _asInt(vitals['heart_rate']) ?? heartRate;
+      spO2 = _asInt(vitals['spo2']) ?? spO2;
+      respiratoryRate = _asInt(vitals['breathing_rate']) ?? respiratoryRate;
+      hrvRmssd = _asDouble(vitals['hrv_rmssd']) ?? hrvRmssd;
+      perfusionIndex = _asDouble(vitals['perfusion_index']) ?? perfusionIndex;
       shouldNotify = true;
     }
 
-    if (data.containsKey('temperature') && data['temperature'] is Map) {
-      final temps = data['temperature'];
-      skinTempLeft = (temps['left_axilla'] as num?)?.toDouble() ?? skinTempLeft;
-      skinTempRight = (temps['right_axilla'] as num?)?.toDouble() ?? skinTempRight;
-      temperature = (temps['cervical'] as num?)?.toDouble() ?? temperature;
+    // Top-level scalar fallbacks (legacy mock shapes). Type-checked so
+    // a structured Map never trips an `as num` cast.
+    final hrTop = _asInt(data['heart_rate']);
+    if (hrTop != null && hrTop != heartRate) {
+      heartRate = hrTop;
+      shouldNotify = true;
+    }
+    final tempTop = _asDouble(data['temperature']);
+    if (tempTop != null && tempTop != temperature) {
+      temperature = tempTop;
       shouldNotify = true;
     }
 
-    // Expert specific updates
-    if (data.containsKey('imu') && data['imu'] is Map) {
-      final imu = data['imu'];
+    // Temperature block — three skin-temp fields.
+    final tempMap = _asMap(data['temperature']);
+    if (tempMap != null) {
+      skinTempLeft = _asDouble(tempMap['left_axilla']) ?? skinTempLeft;
+      skinTempRight = _asDouble(tempMap['right_axilla']) ?? skinTempRight;
+      temperature = _asDouble(tempMap['cervical']) ?? temperature;
+      shouldNotify = true;
+    }
+
+    // IMU block — posture label + spinal angle.
+    final imu = _asMap(data['imu']);
+    if (imu != null) {
       posture = imu['posture_label']?.toString() ?? posture;
-      fallRiskScore = (imu['spinal_angle'] as num?)?.toDouble() ?? fallRiskScore;
+      fallRiskScore = _asDouble(imu['spinal_angle']) ?? fallRiskScore;
       shouldNotify = true;
     }
 
-    if (data.containsKey('environment') && data['environment'] is Map) {
-      final env = data['environment'];
-      ambientTemp = (env['bmp280_temp'] as num?)?.toDouble() ?? ambientTemp;
-      humidity = (env['dht11_humidity'] as num?)?.toDouble() ?? humidity;
-      pressure = (env['bmp280_pressure'] as num?)?.toDouble() ?? pressure;
+    // Environment block.
+    final env = _asMap(data['environment']);
+    if (env != null) {
+      ambientTemp = _asDouble(env['bmp280_temp']) ?? ambientTemp;
+      humidity = _asDouble(env['dht11_humidity']) ?? humidity;
+      pressure = _asDouble(env['bmp280_pressure']) ?? pressure;
       shouldNotify = true;
     }
 
-    if (data.containsKey('fetal') && data['fetal'] is Map) {
-      final fetal = data['fetal'];
-      if (fetal.containsKey('kicks')) {
-         hasKicks = (fetal['kicks'] as List).any((e) => e == true);
-         shouldNotify = true;
+    // Fetal block — kicks + contractions arrays.
+    final fetal = _asMap(data['fetal']);
+    if (fetal != null) {
+      final kicks = _asList(fetal['kicks']);
+      if (kicks != null) {
+        hasKicks = kicks.any((e) => e == true || e == 1);
+        shouldNotify = true;
       }
-      if (fetal.containsKey('contractions')) {
-         hasContractions = (fetal['contractions'] as List).any((e) => e == true);
-         shouldNotify = true;
+      final contractions = _asList(fetal['contractions']);
+      if (contractions != null) {
+        hasContractions = contractions.any((e) => e == true || e == 1);
+        shouldNotify = true;
       }
     }
-    
-    if (data.containsKey('pharmacology') && data['pharmacology'] is Map) {
-      final pharm = data['pharmacology'];
+
+    // Pharmacology block.
+    final pharm = _asMap(data['pharmacology']);
+    if (pharm != null) {
       activeMedication = pharm['active_medication']?.toString();
-      medSimTime = (pharm['sim_time'] as num?)?.toDouble() ?? medSimTime;
+      medSimTime = _asDouble(pharm['sim_time']) ?? medSimTime;
       clearanceModel = pharm['clearance_model']?.toString() ?? clearanceModel;
       shouldNotify = true;
     }
-    
-    // Only call notifyListeners() if low-frequency data actually changed
-    // High-frequency waveform updates auto-trigger their own ValueNotifiers independently
+
+    // Only call notifyListeners() if low-frequency data actually changed.
+    // High-frequency waveform updates auto-trigger their own ValueNotifiers.
     if (shouldNotify) {
       notifyListeners();
     }

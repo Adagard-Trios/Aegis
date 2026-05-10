@@ -1,0 +1,59 @@
+# Keep the Docker build context lean — these aren't needed at runtime
+# and would bloat the image (mobile alone is ~500 MB after Flutter
+# pulls its Android Gradle cache; PlatformIO has a ~200 MB .pio dir).
+
+# Version control + IDE
+.git/
+.github/
+.vscode/
+.idea/
+*.iml
+
+# Python build artefacts
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+build/
+dist/
+wheels/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Other platforms — none of these run inside the API container
+mobile/
+frontend/
+PlatformIO/
+
+# ML pipeline data caches — gigabytes of downloaded datasets we
+# never want inside the image. Trained-runtime weights live under
+# MEDVERSE_MODELS_DIR (mounted from the persistent disk on Render),
+# not baked into the image.
+models/*/data/
+models/*/artifacts/
+models/*/saved_models/
+models/*/logs/
+models/*/mlruns/
+
+# Local databases / chroma stores (re-created at runtime)
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+chroma_data/
+.langgraph_api/
+
+# Logs + temp
+logs/
+*.log
+.tmp/
+.cache/
+
+# Docs / planning — don't need them in the runtime image
+*.md
+!README.md
+.claude/

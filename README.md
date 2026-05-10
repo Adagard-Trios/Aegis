@@ -871,9 +871,96 @@ npm run lint    # eslint
 
 Flutter 1.0.0+1, Dart SDK `^3.11.0`. Targets Android, iOS, Web, Windows, macOS and Linux.
 
-Dependencies ([mobile/aegis/pubspec.yaml](mobile/aegis/pubspec.yaml)): `provider`, `http`, `google_fonts`, `fl_chart`, `flutter_markdown`, `model_viewer_plus`, `webview_flutter`, `image_picker`.
+Dependencies ([mobile/aegis/pubspec.yaml](mobile/aegis/pubspec.yaml)): `provider`, `http`, `google_fonts`, `fl_chart`, `flutter_markdown`, `model_viewer_plus`, `image_picker`, `flutter_secure_storage`, **`flutter_blue_plus`**, **`permission_handler`**, **`fftea`**, **`go_router`**, **`package_info_plus`**.
 
-Screens include Dashboard, Specialists (tabbed cardiology / neurology / obstetrics / respiratory / environment), Digital Twin (`model_viewer_plus`), Diagnostics, Settings. Services — `api_service.dart` and `vest_stream_service.dart` — mirror the web client's SSE/REST patterns.
+### Material 3 navigation shell
+
+Bottom navigation has 5 destinations (M3 `NavigationBar`):
+
+| Tab | Route | Purpose |
+|---|---|---|
+| **Dashboard** | `/` | Vitals overview, biometric tiles, simulation panel |
+| **Specialists** | `/specialists` → 7 sub-routes | Cardiology / Pulmonary / Neurology / Obstetrics / Dermatology / Ocular / General Physician — each with live charts + auto-refreshing AI assessment |
+| **3D Twin** | `/twin` | `model_viewer_plus` GLB avatar with live status pill |
+| **Chat** | `/chat` | Multi-specialty AI chat — persona picker (7 specialties), real `POST /api/agent/ask` with snapshot attached, image attach via camera/gallery |
+| **Settings** | `/settings` → 5 sub-routes | Sensors (formerly its own bottom-nav tab) / Profile / Backend / Accessibility / About |
+
+The router is a `StatefulShellRoute.indexedStack` (one navigator stack per tab) so drilling into a specialty + switching tabs + returning preserves the deep-linked state. Sub-route pushes use M3 fade-through (300 ms standard, collapses to instant when reduced-motion is on).
+
+### Material 3 design system
+
+- **Theme** ([`mobile/aegis/lib/theme/`](mobile/aegis/lib/theme/)) — `useMaterial3: true`, `ColorScheme.fromSeed(Color(0xFF06B6D4))` (cyan-500 brand seed). Component themes configured for `Card` / `NavigationBar` / `FilledButton` / `Chip` / `BottomSheet` / `Dialog` / `AppBar`. High-contrast mode bumps surface luminance to WCAG AAA.
+- **Typography** — full M3 type scale via Inter; tabular numerics on biometrics via JetBrainsMono with `tabularFigures` so live values don't reflow tick-to-tick.
+- **Motion** — M3 duration / easing tokens. Page transitions: shared-axis horizontal for siblings, fade-through for sub-route pushes, container-transform reserved for card → detail flows. `MediaQuery.disableAnimationsOf(context)` and the in-app reduced-motion toggle both collapse durations to zero.
+- **Accessibility** — every interactive widget wrapped in `Semantics(button: true, label: ...)` (BiometricCard reads as "Heart rate: 72 beats per minute"). `MinimumTapTarget` enforces ≥48 px hit area (configurable to 56 in large-tap-target mode). Color-blind safety: every status surface carries an icon (✓ / ⚠ / ✕) so meaning isn't carried by hue alone.
+
+### What every button does (no mocks)
+
+The redesign deleted every dead-end UI surface. Every interactive element either hits a real backend or performs a real local action:
+
+| Surface | Action |
+|---|---|
+| Chat send | `POST /api/agent/ask` with the active persona + freshest local snapshot |
+| Specialty screen `AiAssessmentCard` (auto on mount + manual refresh) | `POST /api/agent/ask` for that specialty, cached per-specialty (re-fetch on drift > 5 BPM/% or > 30 s) |
+| General Physician → Send to GPU | `POST /api/upload-lab-results` (multipart), real OCR pipeline, real SnackBar with extracted data |
+| Simulation panel (Dashboard / Digital Twin sheet) | `POST /api/simulation/mode`, `POST /api/simulation/medicate`, `POST /api/upload-lab-results` |
+| Settings → Backend → "Test connection" | `GET /api/history?limit=1`, real SnackBar reporting backend reachability |
+| Settings → Backend URL save | Persists via `flutter_secure_storage`, hot-applied via `ApiConfig.setOverride` |
+| Settings → Profile save | Persists Patient ID / name / notes; **clears `AiAssessmentRepository` cache** so cached AI text doesn't leak across patients |
+| Settings → Accessibility toggles | Persist + immediately mirror to theme module statics |
+| Sensors → Search / Connect / Disconnect | Drives the `BleConnectionSupervisor` directly |
+
+### Direct-BLE architecture (mobile owns the radio)
+
+The mobile build no longer streams telemetry from the FastAPI `/stream` SSE endpoint. The phone scans + connects to the **vest** (`Aegis_SpO2_Live`) and the **AbdomenMonitor** directly over BLE, parses the firmware payloads on-device, runs light DSP locally (HR / SpO₂ / breathing rate / HRV / PI), assembles a snapshot dict in the same shape `build_telemetry_snapshot()` emits, and feeds it to the existing UI bindings unchanged. The server is contacted **only** for agentic + ML work: LangGraph specialty experts, complex-diagnosis graph, digital-twin simulations, image upload, FHIR exports, consent ledger, alerts CRUD.
+
+```
+┌──────┐  BLE    ┌────────────────────┐  Map<String,dynamic>   ┌────────────────┐
+│ Vest │────────►│ BleVestService     │───────────────────────►│ VestDataModel  │
+└──────┘         └────────────────────┘                        │ (UI bindings)  │
+                            │                                  └────────────────┘
+                            ▼
+                  ┌──────────────────────┐                      ┌────────────────────────┐
+                  │ LocalSnapshotBuilder │   1 Hz snapshots ───►│ /api/snapshot/ingest    │ ──► backend DB / FHIR
+                  │ (DSP @ 1 Hz)         │                      └────────────────────────┘
+                  └──────────────────────┘                      ┌────────────────────────┐
+                            ▲                                   │ /api/agent/* (snapshot │ ──► LangGraph experts /
+                            │                                   │  attached in body)      │     complex-diagnosis /
+┌────────┐  BLE    ┌──────────────────────┐                     └────────────────────────┘     digital twin / ML
+│Abdomen │────────►│ BleAbdomenService    │
+└────────┘         └──────────────────────┘
+```
+
+**New mobile modules** (under [`mobile/aegis/lib/`](mobile/aegis/lib/)):
+
+- [`ble/`](mobile/aegis/lib/) — `ble_constants.dart` (UUIDs + device names mirroring [`config.h`](PlatformIO/vest/src/config.h)), `ble_payload_parser.dart` (pure decoder for the vest vitals + ECG burst + abdomen frames), `ble_vest_service.dart` + `ble_abdomen_service.dart` (per-device `ChangeNotifier` — scan / connect / subscribe / parse / exponential backoff on disconnect), `ble_connection_supervisor.dart` (single owner for both services), `permission_gate.dart` (one-time first-run permission flow for `BLUETOOTH_SCAN` + `BLUETOOTH_CONNECT` + iOS `NSBluetoothAlwaysUsageDescription`).
+- [`dsp/`](mobile/aegis/lib/) — `ring_buffer.dart`, `filters.dart` (RBJ-cookbook biquad bandpass + lowpass), `peak_finder.dart` (`scipy.signal.find_peaks` port — `distance` + `prominence`), `dsp_service.dart` (Dart ports of `calculate_heart_rate / spo2 / breathing_rate / hrv / pi` from [app.py](app.py) lines 303–368). Heavy DSP (Dawes-Redman CTG, IMU posture entropy / gait / fall-risk) stays server-side and runs inside `/api/agent/*` calls.
+- [`pipeline/`](mobile/aegis/lib/) — `telemetry_source.dart` (abstract), `ble_telemetry_source.dart` (mobile default), `sse_telemetry_source.dart` (`kIsWeb`-only fallback for the web build), `local_snapshot_builder.dart` (1-Hz aggregator that produces the backend-shaped snapshot dict).
+- [`services/snapshot_uploader.dart`](mobile/aegis/lib/services/) — debounced 15 s POST to `/api/snapshot/ingest` so the backend's `/api/history`, `/api/fhir/*`, agent loop, and alerts evaluator have continuous data even between explicit agent calls.
+- [`services/api_service.dart`](mobile/aegis/lib/services/api_service.dart) — `agentAsk()`, `agentRunNow()`, `complexDiagnosis()`, `digitalTwinScenario()` methods that attach the freshest local snapshot in the body and add the `X-Aegis-Source: mobile-ble` header.
+
+**Refactored**:
+
+- [`vest_stream_service.dart`](mobile/aegis/lib/services/vest_stream_service.dart) — now wraps a `TelemetrySource`. Picks `BleTelemetrySource` on Android / iOS, `SseTelemetrySource` on `kIsWeb`. The Phase 4.3 services (`LocalCacheService` / `EdgeAnomalyService` / `SyncQueueService`) hook in via the unchanged `_onSnapshot` callback — they consume the dict shape, which the local builder reproduces verbatim.
+- [`main.dart`](mobile/aegis/lib/main.dart) — wraps `MainLayout` in `PermissionGate` so BLE permissions are requested once at first launch. Spawns the `SnapshotUploader` alongside the stream.
+
+**Backend additions** (smallest possible — the laptop / web demo path is unaffected):
+
+- New `POST /api/snapshot/ingest` route in [app.py](app.py) — body `{patient_id, snapshot}`, persists via `insert_telemetry`, idempotent on `(ts, patient_id)`.
+- Mobile-owns-BLE flag — when any agent / ingest call carries header `X-Aegis-Source: mobile-ble`, the backend marks the patient_id "mobile-owned" for 60 s. While hot, [`sqlite_writer_loop`](app.py) skips its own BLE-derived insert so we don't double-write rows.
+- Snapshot-in-body preference — [`/api/agent/ask`](app.py) prefers `body.snapshot` when present (via `_prefer_body_snapshot()` helper). `TwinScenarioRequest` and `TwinPlanRequest` accept an optional `snapshot` field that touches the mobile-BLE flag.
+
+**Permission setup**:
+
+- [`AndroidManifest.xml`](mobile/aegis/android/app/src/main/AndroidManifest.xml) — `BLUETOOTH_SCAN` (`neverForLocation`), `BLUETOOTH_CONNECT`, `FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_CONNECTED_DEVICE`, plus the legacy ≤Android 11 `BLUETOOTH` / `BLUETOOTH_ADMIN` / `ACCESS_FINE_LOCATION` fallback trio.
+- [`Info.plist`](mobile/aegis/ios/Runner/Info.plist) — `NSBluetoothAlwaysUsageDescription`, `NSBluetoothPeripheralUsageDescription`, `UIBackgroundModes: bluetooth-central`.
+
+**What the mobile app no longer does**: SSE telemetry consumption (web build only). The mock-data 10-Hz generator is gone from mobile builds — when both BLE devices are out of range the dashboard shows a "No sensors connected" state instead of synthetic numbers.
+
+**Known limitations** (deferred):
+- iOS aggressively throttles backgrounded BLE centrals — expect 1–2 s notify gaps when the app is backgrounded. Live waveforms only render reliably when the app is foreground.
+- Long-running Android sessions need a `flutter_foreground_task` foreground service to survive Doze. Not yet wired — short sessions (<5 min) work without it.
+- DSP-port drift vs Python's scipy `filtfilt` zero-phase pipeline is non-zero (single-pass biquad on mobile). Tolerance budget: HR ±1 BPM, SpO₂ ±1, BR ±1, HRV ±2 ms, PI ±0.05. Golden-data parity tests against Python fixtures land in a follow-up PR.
 
 ## Firmware (PlatformIO/)
 
@@ -1213,6 +1300,63 @@ The runtime weight directories (`models/<domain>/`) are gitignored — built loc
 - **Clinical depth**: have a cardiologist / OB-GYN review [src/knowledge/*.md](src/knowledge/).
 - **POTS calibration**: empirical threshold validation against a real sit-to-stand trial.
 - **Deps**: `pip install -r requirements.txt`, `cd frontend && npm install`, `cd mobile/aegis && flutter pub get` — picks up `psycopg2-binary`, `recharts`, `flutter_secure_storage`.
+
+## Deploying the backend on Render
+
+The backend is cloud-ready — no Bluetooth radio needed in the cloud because the **mobile app owns BLE end-to-end** (the redesign moved scan/connect/parse onto the phone; the backend now only receives snapshots via `POST /api/snapshot/ingest` and runs the AI / FHIR / persistence pieces).
+
+### Files
+
+| File | Purpose |
+|---|---|
+| [`render.yaml`](render.yaml) | Render Blueprint — declares the web service (Standard plan, 2 GB RAM), a 1 GB persistent disk mounted at `/var/medverse`, all required env vars, and an optional Render-managed Postgres add-on. |
+| [`Dockerfile`](Dockerfile) | Multi-stage Python 3.13-slim build. Render auto-detects this and uses it instead of the buildpack. Portable to Fly.io / Cloud Run / ECS. |
+| [`.dockerignore`](.dockerignore) | Excludes `mobile/`, `frontend/`, `PlatformIO/`, dataset caches — keeps the runtime image ~1.1 GB. |
+
+### One-time setup
+
+1. **Push this repo** to GitHub.
+2. **New Blueprint** on Render → connect the repo → Render reads `render.yaml` and provisions the web service + Postgres + disk in one click.
+3. **Fill the secrets** in the Render dashboard (these were marked `sync: false` so they're never committed):
+   - `GROQ_API_KEY` (required)
+   - `CARDIOLOGY_EXPERT_GROQ_API_KEY` … `GENERAL_PHYSICIAN_GROQ_API_KEY` (optional — fall back to the shared key)
+   - `MEDVERSE_DB_URL` — set to the Render Postgres `DATABASE_URL` from the dashboard, with the prefix replaced from `postgres://` to `postgresql+asyncpg://`. Skip this and the backend falls back to SQLite at `/var/medverse/medverse.db` (persistent across redeploys via the disk).
+   - `MEDVERSE_CORS_ORIGINS` — your frontend domain(s), comma-separated (e.g. `https://medverse.vercel.app`).
+   - `MEDVERSE_JWT_SECRET` — only needed when `MEDVERSE_AUTH_ENABLED=true` (off by default).
+4. **First deploy** runs `alembic upgrade head` automatically (in the Dockerfile `CMD`) — schema lands on Postgres before the API starts answering.
+
+### Architecture flags (already set in `render.yaml`)
+
+| Env var | Value | Why |
+|---|---|---|
+| `MEDVERSE_DISABLE_BLE` | `true` | No Bluetooth radio in the cloud — mobile pushes snapshots instead. |
+| `MEDVERSE_DISABLE_AGENT_LOOP` | `true` | The 60-s background agent loop burns Groq tokens with no user driving it. Flip off if you want continuous alerting. |
+| `CHROMA_PERSIST_DIR` | `/var/medverse/chroma` | RAG history collections written to the persistent disk so they survive redeploys. |
+| `MEDVERSE_UPLOADS_DIR` | `/var/medverse/uploads` | Lab / skin / retinal image uploads write here so subsequent snapshot `imaging.{retinal,skin}.image_path` references stay valid. |
+| `MEDVERSE_MODELS_DIR` | `/var/medverse/models` | Where runtime adapters (`fetal_health/model.pkl`, `parkinson_screener/model.pkl`, etc.) look for trained weights. Train + export pipelines locally; copy the per-domain pickle files into this disk via Render's SSH-shell or a one-shot upload route. |
+| `MEDVERSE_SQLITE_PATH` | `/var/medverse/medverse.db` | SQLite fallback path when `MEDVERSE_DB_URL` is unset. |
+
+### Pointing the mobile app at Render
+
+In the app: **Settings → Backend connection** → enter `https://your-service.onrender.com`. The `BackendSettingsScreen` writes the override to `flutter_secure_storage` so it survives restarts. Tap **Test connection** — the SnackBar reports the row count from `/api/history`. From that point every API call (`/api/agent/ask`, `/api/snapshot/ingest`, `/api/digital-twin/scenario`, etc.) lands on Render.
+
+### Costs (May 2026 pricing)
+
+- **Web service** — Standard $25/mo (2 GB RAM, no cold starts). Drop to Starter $7/mo (1 GB) only if you also disable Chroma RAG; Free tier sleeps after 15 min of idle which kills SSE.
+- **Postgres** — Free for 90 days, then Starter $7/mo. Or BYO (Neon free tier, Supabase, Timescale Cloud).
+- **Persistent disk** — $0.25/GB/mo. 1 GB ($0.25/mo) is plenty for Chroma + uploaded images.
+- **Total** — ~$32/mo on Render-managed, or ~$25/mo with BYO Postgres on Neon's free tier.
+
+### Memory headroom
+
+Resident footprint at idle is ~1.3 GB:
+- FastAPI + asyncio + uvicorn: ~150 MB
+- LangGraph + Groq client + httpx: ~200 MB
+- Chroma + biolord-2023 embedding model: ~600 MB at first index, ~300 MB resident
+- pandas / numpy / scipy import overhead: ~250 MB
+- Active sklearn ML adapters (fetal_health + parkinson_screener): ~50 MB each
+
+Standard plan's 2 GB gives ~700 MB peak headroom — comfortable for one or two concurrent agent calls. If you turn on every ML adapter (>9 active), bump to Pro ($85/mo, 4 GB).
 
 ## License
 

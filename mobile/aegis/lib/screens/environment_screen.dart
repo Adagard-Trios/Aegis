@@ -5,7 +5,6 @@ import 'package:image_picker/image_picker.dart';
 
 import '../models/vest_data_model.dart';
 import '../widgets/biometric_card.dart';
-import '../widgets/interpretation_card.dart';
 import '../theme.dart';
 
 class EnvironmentScreen extends StatefulWidget {
@@ -80,13 +79,11 @@ class _EnvironmentScreenState extends State<EnvironmentScreen> {
           _buildCameraSection(),
           const SizedBox(height: 24),
 
-          const Text('LATEST A.I. ANALYSIS', style: TextStyle(color: MedVerseTheme.textMuted, fontSize: 12, fontWeight: FontWeight.bold, letterSpacing: 1.5)),
-          const SizedBox(height: 12),
-          const InterpretationCard(
-            title: "Dermatology & Environment",
-            icon: Icons.thermostat_rounded,
-            content: "**Observations:**\n- **Core Temp**: Nominal at 36.6°C.\n- **Skin Thermals**: Symmetrical heat distribution across left and right thoracic nodes.\n- **Ambient Environment**: Controlled room temperature.\n\n**Conclusion**:\nThermoregulation is fully active and preventing hypothermia. No hyperthermic focal points that would indicate localized inflammation.",
-          ),
+          // Environment is not a LangGraph specialty — for AI insight on
+          // ambient + thermal context, open the Chat tab and pick the
+          // Dermatologist or General Physician persona. Keeping this
+          // screen focused on raw env data instead of placeholder
+          // narrative text.
         ],
       ),
     );
@@ -96,9 +93,9 @@ class _EnvironmentScreenState extends State<EnvironmentScreen> {
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        color: MedVerseTheme.surfaceHighlight.withOpacity(0.3),
+        color: MedVerseTheme.surfaceHighlight.withValues(alpha: 0.3),
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: MedVerseTheme.primary.withOpacity(0.2)),
+        border: Border.all(color: MedVerseTheme.primary.withValues(alpha: 0.2)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,

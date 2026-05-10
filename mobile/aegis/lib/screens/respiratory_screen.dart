@@ -2,9 +2,9 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../models/vest_data_model.dart';
+import '../widgets/ai_assessment_card.dart';
 import '../widgets/live_waveform.dart';
 import '../widgets/biometric_card.dart';
-import '../widgets/interpretation_card.dart';
 import '../theme.dart';
 
 class RespiratoryScreen extends StatelessWidget {
@@ -33,13 +33,7 @@ class RespiratoryScreen extends StatelessWidget {
             ],
           ),
           const SizedBox(height: 24),
-          const Text('LATEST A.I. ANALYSIS', style: TextStyle(color: MedVerseTheme.textMuted, fontSize: 12, fontWeight: FontWeight.bold, letterSpacing: 1.5)),
-          const SizedBox(height: 12),
-          const InterpretationCard(
-            title: "Pulmonology Assessment",
-            icon: Icons.air_rounded,
-            content: "**Observations:**\n- **Respiratory Rate**: 16 breaths per minute.\n- **SpO2**: Saturated consistently at 98%.\n- **Pneumography**: The waveform exhibits smooth sinusoidal expansion and contraction with zero paradoxical movements.\n\n**Conclusion**:\nAirway function is optimal. No episodes of apnea or dyspnea detected during the observation window.",
-          ),
+          const AiAssessmentCard(specialty: 'pulmonary'),
         ],
       ),
     );
