@@ -196,25 +196,48 @@ def _get_model(specialty: str = None):
 def _make_information_retrieval(specialty: str):
     """
     Creates the information_retrieval node for a given specialty.
-    Calls all tools registered for that specialty in parallel (mock),
-    collects results into state.tool_results.
+
+    Behaviour:
+      • If `state["sensor_telemetry"]` is present (mobile attached a real
+        snapshot — the common case in production), the mock retrieval
+        tools are skipped. The LLM still sees the real values via the
+        `telemetry_context` block of the system prompt; running the mock
+        tools alongside would inject fabricated values that contradict
+        the live data and confuse the assessment.
+      • If no snapshot is present (e.g. background_agent_runner_loop on
+        a quiet system), the mock tools fire so the LLM has *something*
+        plausible to interpret instead of empty input.
+      • ML-model adapter outputs (graph_factory._augment_with_ml_models)
+        are appended in either case — they're real predictions when the
+        adapters have weights, and gracefully no-op otherwise.
     """
     tools = EXPERT_TOOLS.get(specialty, [])
 
     def information_retrieval(state: ExpertSubgraphState) -> Dict[str, Any]:
         tool_results: Dict[str, str] = {}
+        telemetry = state.get("sensor_telemetry") or {}
+        has_telemetry = bool(telemetry) and (
+            bool(telemetry.get("vitals"))
+            or bool(telemetry.get("waveform"))
+            or bool(telemetry.get("imaging"))
+            or bool(telemetry.get("fetal"))
+        )
 
-        # Call each tool and collect results
-        for tool_fn in tools:
-            try:
-                result = tool_fn.invoke({})
-                tool_results[tool_fn.name] = result
-            except Exception as e:
-                tool_results[tool_fn.name] = f"ERROR: {e}"
+        if has_telemetry:
+            tool_results["live_telemetry"] = (
+                "Live telemetry attached to this request — see "
+                "## LIVE TELEMETRY CONTEXT in the prompt below. Trust "
+                "those numeric values over any other defaults."
+            )
+        else:
+            for tool_fn in tools:
+                try:
+                    result = tool_fn.invoke({})
+                    tool_results[tool_fn.name] = result
+                except Exception as e:
+                    tool_results[tool_fn.name] = f"ERROR: {e}"
 
-        # Augment with structured ML-model outputs when adapters are loaded
         try:
-            telemetry = state.get("sensor_telemetry") or {}
             ml_extras = _augment_with_ml_models(specialty, telemetry)
             tool_results.update(ml_extras)
         except Exception:
@@ -233,6 +256,7 @@ def _make_information_retrieval(specialty: str):
                     "step": "information_retrieval",
                     "specialty": specialty,
                     "tools_called": list(tool_results.keys()),
+                    "snapshot_present": has_telemetry,
                 }
             ],
         }

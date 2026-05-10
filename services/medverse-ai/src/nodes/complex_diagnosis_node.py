@@ -177,40 +177,64 @@ def planner_node(state: ComplexDiagnosisState) -> Dict[str, Any]:
     spo2 = vitals.get("spo2")
     br = vitals.get("breathing_rate")
     hrv = vitals.get("hrv_rmssd")
+    temp = vitals.get("temperature") or vitals.get("temp_c")
+    sys_bp = vitals.get("systolic") or vitals.get("bp_systolic")
+    dia_bp = vitals.get("diastolic") or vitals.get("bp_diastolic")
 
     cardio_trigger = (
-        (hr is not None and (hr > 120 or hr < 50)) or
-        (hrv is not None and hrv < 15)
+        (hr is not None and (hr >= 110 or hr <= 50)) or
+        (hrv is not None and hrv < 15) or
+        (sys_bp is not None and (sys_bp >= 140 or sys_bp <= 90)) or
+        (dia_bp is not None and (dia_bp >= 90 or dia_bp <= 60))
     )
     if cardio_trigger:
         selected.append("Cardiology")
-        rationale_bits.append(f"HR={hr}, HRV={hrv} -> cardiology")
+        rationale_bits.append(
+            f"Cardiology: HR={hr}, HRV={hrv}, BP={sys_bp}/{dia_bp}"
+        )
 
     pulm_trigger = (
-        (spo2 is not None and spo2 < 94) or
-        (br is not None and (br > 22 or br < 8))
+        (spo2 is not None and spo2 <= 94) or
+        (br is not None and (br >= 22 or br <= 8))
     )
     if pulm_trigger:
         selected.append("Pulmonary")
-        rationale_bits.append(f"SpO2={spo2}, RR={br} -> pulmonary")
+        rationale_bits.append(f"Pulmonary: SpO2={spo2}, RR={br}")
+
     if (imu_d.get("tremor") or {}).get("tremor_flag") or \
        (imu_d.get("pots") or {}).get("pots_flag") or \
        (imu_d.get("gait") or {}).get("asymmetry_flag"):
         selected.append("Neurology")
-        rationale_bits.append("IMU biomarkers abnormal -> neurology")
+        rationale_bits.append("Neurology: IMU biomarkers abnormal")
+
     if fetal.get("dawes_redman") or any(fetal.get("contractions") or []):
         selected.append("Obstetrics")
-        rationale_bits.append("Active fetal monitoring -> obstetrics")
+        rationale_bits.append("Obstetrics: active fetal monitoring")
+
+    # Fever or hypothermia → broad workup. Goes through GP rather than a
+    # dedicated infectious-disease specialty (we don't have one).
+    if temp is not None and (temp >= 38.0 or temp <= 35.0):
+        rationale_bits.append(f"Fever/hypothermia (T={temp}) → broad workup")
+        if "Cardiology" not in selected:
+            selected.append("Cardiology")  # tachycardia screen
+        if "Pulmonary" not in selected:
+            selected.append("Pulmonary")   # pneumonia screen
 
     # Always include General Physician for synthesis
     if "General Physician" not in selected:
         selected.append("General Physician")
 
-    # Safety floor: if nothing was specifically triggered, run cardiology + GP
-    # so we always have at least one specialist's view.
+    # Safety floor: if nothing was specifically triggered, run a broad
+    # screen (cardio + pulm + GP) so the rest of the graph has at
+    # least three specialty views to weigh against each other instead
+    # of just one.
     if len(selected) == 1:  # only GP added
         selected.insert(0, "Cardiology")
-        rationale_bits.append("Default fallback: cardiology + GP")
+        selected.insert(1, "Pulmonary")
+        rationale_bits.append(
+            "All vitals within normal ranges — running broad screen "
+            "(cardiology + pulmonary + GP) to surface subclinical findings."
+        )
 
     rationale = "; ".join(rationale_bits) if rationale_bits else "Default workup"
 
