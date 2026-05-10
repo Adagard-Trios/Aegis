@@ -362,6 +362,36 @@ async def health_diagnostics():
 # ─── Agent endpoints ────────────────────────────────────────────────────────
 
 
+_PATIENT_DEMOGRAPHIC_KEYS = ("age", "sex", "gestational_age_weeks", "bmi")
+
+
+def _splice_demographics_into_snapshot(
+    snapshot: Dict[str, Any],
+    patient_profile: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Mirror profile demographics into `snapshot['patient']` so the
+    sklearn adapters in src/ml/ — which look there for `age`, `sex`,
+    `gestational_age_weeks`, etc. — find them. Without this splice, every
+    cardiology / dermatology / ocular / OB adapter's `_to_feature_row`
+    returns nothing and the prediction silently no-ops.
+
+    Doesn't overwrite values the snapshot itself supplied (mobile may
+    eventually compute a derived BMI client-side; profile data is the
+    fallback)."""
+    if not patient_profile:
+        return snapshot
+    patient_block = dict(snapshot.get("patient") or {})
+    for k in _PATIENT_DEMOGRAPHIC_KEYS:
+        v = patient_profile.get(k)
+        if v in (None, "", []):
+            continue
+        patient_block.setdefault(k, v)
+    if patient_block:
+        snapshot = dict(snapshot)  # shallow copy — don't mutate caller's dict
+        snapshot["patient"] = patient_block
+    return snapshot
+
+
 def _build_state(
     message: str,
     patient_id: str,
@@ -374,6 +404,10 @@ def _build_state(
     Prior turns from the client are prepended so the graph's reverse-walk
     in interpretation_generation finds the latest user message (the new
     one we just appended) but the LLM still sees the context above it.
+
+    Patient demographics from `patient_profile` are spliced into
+    `sensor_telemetry.patient` so the ML adapters that read those keys
+    fire instead of silently no-op'ing.
     """
     msgs: List[Dict[str, Any]] = []
     if history:
@@ -394,10 +428,12 @@ def _build_state(
     if patient_profile:
         shared["patient_profile"] = patient_profile
 
+    enriched_snapshot = _splice_demographics_into_snapshot(snapshot or {}, patient_profile)
+
     return {
         "messages": msgs,
         "expert_domain": "",  # set by the graph
-        "sensor_telemetry": snapshot or {},
+        "sensor_telemetry": enriched_snapshot,
         "shared_context": shared,
         "tool_results": {},
     }
@@ -507,10 +543,15 @@ async def api_agent_complex_diagnosis(req: ComplexDiagnosisRequest):
             "patient_id": pid,
         }
 
+    # Splice demographics so the planner_node's `vitals.*` checks +
+    # the per-specialty subgraph adapter calls can read patient.age /
+    # patient.sex / patient.gestational_age_weeks.
+    enriched_snapshot = _splice_demographics_into_snapshot(snapshot, req.patient_profile)
+
     initial_state = {
         "patient_id": pid,
         "patient_profile": req.patient_profile or {},
-        "sensor_telemetry": snapshot,
+        "sensor_telemetry": enriched_snapshot,
         "fhir_history": fhir_history,
         "ml_outputs": {},
         "candidates": [],
