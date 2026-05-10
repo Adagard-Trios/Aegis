@@ -2491,19 +2491,58 @@ def _resolve_specialty(label: str) -> str:
     return _SPECIALTY_TO_GRAPH.get((label or "").strip().lower(), label or "")
 
 
+# When MEDVERSE_AI_BASE_URL is set, agent endpoints forward to that host
+# instead of importing LangGraph locally. This keeps the Render free-tier
+# image (512 MB RAM) from OOM'ing — the heavy stack lives on Hugging Face
+# Spaces (16 GB RAM, free). See services/medverse-ai/.
+_AI_BASE_URL = (os.environ.get("MEDVERSE_AI_BASE_URL") or "").strip().rstrip("/")
+
+
+async def _proxy_to_ai_service(path: str, payload: Dict[str, Any], timeout_s: float = 120.0) -> Optional[Dict[str, Any]]:
+    """Forward an agent request to the HF Spaces AI service.
+    Returns the parsed JSON response, or None when no AI URL is configured.
+    Raises on transport / 5xx errors so the caller can surface them."""
+    if not _AI_BASE_URL:
+        return None
+    try:
+        import httpx
+    except ImportError:
+        logging.getLogger(__name__).warning("httpx unavailable; agent proxy disabled")
+        return None
+    url = f"{_AI_BASE_URL}{path}"
+    async with httpx.AsyncClient(timeout=timeout_s) as client:
+        r = await client.post(url, json=payload)
+        r.raise_for_status()
+        return r.json()
+
+
 @app.post("/api/agent/ask")
 async def api_agent_ask(req: AgentAskRequest, request: Request, user=Depends(require_user)):
     """Synchronously invoke an expert graph and return its assessment."""
     specialty = _resolve_specialty(req.specialty)
     pid = _resolve_patient_id(req.patient_id, user)
     audit(request, user, "ask", "agent", specialty)
+    snapshot = _prefer_body_snapshot(request, pid, req.snapshot)
+    # Free-tier deploys: forward to HF Spaces AI service (LangGraph too big
+    # to fit in 512 MB). Local fallback below kicks in on bigger plans.
+    if _AI_BASE_URL:
+        try:
+            proxied = await _proxy_to_ai_service("/api/agent/ask", {
+                "specialty": specialty,
+                "message": req.message,
+                "snapshot": snapshot,
+                "patient_id": pid,
+            })
+            if proxied is not None:
+                return proxied
+        except Exception as e:
+            logging.getLogger(__name__).warning(f"agent proxy failed: {e}; falling back to local graph")
     try:
         from src.graphs.graph_factory import build_expert_graph
         graph = build_expert_graph(specialty).compile()
-        # Mobile-BLE clients attach a fresh snapshot in the body — prefer it
-        # over the locally-built one so we always run the graph against the
-        # phone's freshest live tick (the local DB lags by up to 15 s).
-        snapshot = _prefer_body_snapshot(request, pid, req.snapshot)
+        # snapshot was resolved above (Mobile-BLE clients attach a fresh
+        # one in the body so the graph runs against the phone's latest
+        # tick rather than the DB's last ingest).
         state = {
             "messages": [{"role": "user", "content": req.message}],
             "patient_id": pid,
@@ -2550,6 +2589,20 @@ async def api_agent_run_now(
     targets = [_resolve_specialty(s) for s in targets if s]
     ran: list = []
     snapshot = get_latest_telemetry(patient_id=pid) or build_telemetry_snapshot()
+    # Free-tier deploys: forward to HF Spaces. The remote returns a
+    # results dict per specialty; we still log the run locally for audit.
+    if _AI_BASE_URL:
+        try:
+            proxied = await _proxy_to_ai_service("/api/agent/run-now", {
+                "patient_id": pid,
+                "snapshot": snapshot,
+                "specialties": targets,
+            })
+            if proxied is not None:
+                audit(request, user, "run_now", "agents", ",".join(targets))
+                return proxied
+        except Exception as e:
+            logging.getLogger(__name__).warning(f"agent run-now proxy failed: {e}; falling back to local")
     try:
         from src.graphs.graph_factory import build_expert_graph
     except Exception as e:

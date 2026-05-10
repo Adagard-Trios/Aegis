@@ -21,8 +21,10 @@ class BackendSettingsScreen extends StatefulWidget {
 
 class _BackendSettingsScreenState extends State<BackendSettingsScreen> {
   static const _key = 'aegis.backend_url_override';
+  static const _aiKey = 'aegis.ai_url_override';
   final _storage = const FlutterSecureStorage();
   final _ctrl = TextEditingController();
+  final _aiCtrl = TextEditingController();
 
   bool _loading = true;
   bool _testing = false;
@@ -36,12 +38,14 @@ class _BackendSettingsScreenState extends State<BackendSettingsScreen> {
   Future<void> _restore() async {
     try {
       _ctrl.text = await _storage.read(key: _key) ?? '';
+      _aiCtrl.text = await _storage.read(key: _aiKey) ?? '';
     } catch (_) {/* non-fatal */}
     if (mounted) setState(() => _loading = false);
   }
 
   Future<void> _save() async {
     final url = _ctrl.text.trim();
+    final aiUrl = _aiCtrl.text.trim();
     try {
       if (url.isEmpty) {
         await _storage.delete(key: _key);
@@ -50,9 +54,16 @@ class _BackendSettingsScreenState extends State<BackendSettingsScreen> {
         await _storage.write(key: _key, value: url);
         ApiConfig.setOverride(url);
       }
+      if (aiUrl.isEmpty) {
+        await _storage.delete(key: _aiKey);
+        ApiConfig.setAiOverride(null);
+      } else {
+        await _storage.write(key: _aiKey, value: aiUrl);
+        ApiConfig.setAiOverride(aiUrl);
+      }
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text(url.isEmpty ? 'Override cleared' : 'Override saved: $url'),
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('Backend connection saved'),
       ));
     } catch (e) {
       if (!mounted) return;
@@ -89,6 +100,7 @@ class _BackendSettingsScreenState extends State<BackendSettingsScreen> {
   @override
   void dispose() {
     _ctrl.dispose();
+    _aiCtrl.dispose();
     super.dispose();
   }
 
@@ -117,7 +129,28 @@ class _BackendSettingsScreenState extends State<BackendSettingsScreen> {
             hintText: 'http://192.168.1.42:8000',
             border: OutlineInputBorder(),
             helperText:
-                'Leave blank to fall back to the per-platform default',
+                'Leave blank to fall back to the live Render backend',
+          ),
+          keyboardType: TextInputType.url,
+        ),
+        const SizedBox(height: 24),
+        Text(
+          'Active AI service',
+          style: theme.textTheme.labelMedium?.copyWith(
+            color: theme.colorScheme.onSurfaceVariant,
+          ),
+        ),
+        const SizedBox(height: 4),
+        Text(ApiConfig.aiBaseUrl, style: theme.textTheme.titleMedium),
+        const SizedBox(height: 8),
+        TextField(
+          controller: _aiCtrl,
+          decoration: const InputDecoration(
+            labelText: 'Override AI URL',
+            hintText: 'https://your-username-medverse-ai.hf.space',
+            border: OutlineInputBorder(),
+            helperText:
+                'AI agents (chat, assessments) use this. Defaults to the bundled Hugging Face Space.',
           ),
           keyboardType: TextInputType.url,
         ),

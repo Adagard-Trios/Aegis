@@ -1,0 +1,27 @@
+# MedVerse AI service — slim deps for the LangGraph + Groq stack.
+# Deliberately omits sklearn/lightgbm/wfdb/pandas — those belong in the
+# main backend's ML adapters, not in the agent loop.
+
+fastapi
+uvicorn[standard]
+
+# LangGraph + LangChain core (the OOM-heavy stack we moved off Render)
+langgraph
+langchain
+langchain-core
+langchain-groq
+langchain-huggingface
+langchain-chroma
+
+# Direct Groq client
+groq
+
+# Embeddings backend for Chroma RAG history (sentence-transformers
+# downloads ~90 MB on first run; HF Spaces caches it under /root/.cache).
+chromadb
+sentence-transformers
+
+pydantic
+python-dotenv
+tenacity
+numpy

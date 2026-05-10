@@ -153,6 +153,10 @@ Future<void> _restorePreferences() async {
     if (url != null && url.trim().isNotEmpty) {
       ApiConfig.setOverride(url.trim());
     }
+    final aiUrl = await storage.read(key: 'aegis.ai_url_override');
+    if (aiUrl != null && aiUrl.trim().isNotEmpty) {
+      ApiConfig.setAiOverride(aiUrl.trim());
+    }
   } catch (_) {/* non-fatal */}
   try {
     MedverseMotion.reducedMotionOverride =

@@ -15,6 +15,11 @@ import 'auth_service.dart';
 class ApiService {
   static String get baseUrl => ApiConfig.baseUrl;
 
+  /// Host for `/api/agent/*` calls. Defaults to the HF Spaces deployment
+  /// because Render free tier OOMs on LangGraph. Override via Settings or
+  /// `--dart-define=AI_URL=...`. See [ApiConfig.aiBaseUrl].
+  static String get aiBaseUrl => ApiConfig.aiBaseUrl;
+
   static Map<String, String> _headers(AuthService? auth, {bool json = true}) {
     final headers = <String, String>{};
     if (json) headers['Content-Type'] = 'application/json';
@@ -115,7 +120,7 @@ class ApiService {
         'snapshot': ?snapshot,
       };
       final response = await http.post(
-        Uri.parse('$baseUrl/api/agent/ask'),
+        Uri.parse('$aiBaseUrl/api/agent/ask'),
         headers: _agentHeaders(auth),
         body: jsonEncode(body),
       );
@@ -139,7 +144,7 @@ class ApiService {
         'snapshot': ?snapshot,
       };
       final response = await http.post(
-        Uri.parse('$baseUrl/api/agent/run-now'),
+        Uri.parse('$aiBaseUrl/api/agent/run-now'),
         headers: _agentHeaders(auth),
         body: jsonEncode(body),
       );
@@ -165,7 +170,7 @@ class ApiService {
         'snapshot': ?snapshot,
       };
       final response = await http.post(
-        Uri.parse('$baseUrl/api/agent/complex-diagnosis'),
+        Uri.parse('$aiBaseUrl/api/agent/complex-diagnosis'),
         headers: _agentHeaders(auth),
         body: jsonEncode(body),
       );
