@@ -110,6 +110,12 @@ class AgentRunNowRequest(BaseModel):
     specialties: Optional[List[str]] = None
 
 
+class ComplexDiagnosisRequest(BaseModel):
+    patient_id: Optional[str] = None
+    snapshot: Optional[Dict[str, Any]] = None
+    fhir_history: Optional[List[Dict[str, Any]]] = None
+
+
 # ─── Health ─────────────────────────────────────────────────────────────────
 
 
@@ -258,3 +264,53 @@ async def api_agent_run_now(req: AgentRunNowRequest):
             results[spec] = {"error": str(e)[:200]}
 
     return {"status": "ok", "patient_id": pid, "results": results}
+
+
+@app.post("/api/agent/complex-diagnosis")
+async def api_agent_complex_diagnosis(req: ComplexDiagnosisRequest):
+    """Run the collaborative diagnosis graph (proposer → background →
+    skeptic → ranker → diagnoser → narrator). Returns ranked candidate
+    diagnoses, recommended next tests, and a clinician-facing summary.
+    Latency typically 10-25 s on free CPU (four LLM calls)."""
+    pid = (req.patient_id or "medverse-demo-patient").strip()
+    snapshot = req.snapshot or {}
+    fhir_history = req.fhir_history or []
+
+    try:
+        from src.graphs.complex_diagnosis_graph import graph as complex_graph
+    except Exception as e:
+        logger.exception("complex_diagnosis graph import failed")
+        return {
+            "status": "graph_unavailable",
+            "error": str(e)[:300],
+            "patient_id": pid,
+        }
+
+    initial_state = {
+        "patient_id": pid,
+        "sensor_telemetry": snapshot,
+        "fhir_history": fhir_history,
+        "ml_outputs": {},
+        "candidates": [],
+        "specialty_findings": [],
+        "traces": [],
+        "messages": [],
+    }
+
+    try:
+        result = complex_graph.invoke(initial_state)
+    except Exception as e:
+        logger.exception("complex_diagnosis run failed")
+        return {"status": "error", "error": str(e)[:300], "patient_id": pid}
+
+    return {
+        "status": "ok",
+        "patient_id": pid,
+        "selected_specialties": result.get("selected_specialties") or [],
+        "planner_rationale": result.get("planner_rationale") or "",
+        "candidates": result.get("candidates") or [],
+        "final_ranking": result.get("final_ranking") or [],
+        "recommended_next_tests": result.get("recommended_next_tests") or [],
+        "summary_for_clinician": result.get("summary_for_clinician") or "",
+        "traces": result.get("traces") or [],
+    }
