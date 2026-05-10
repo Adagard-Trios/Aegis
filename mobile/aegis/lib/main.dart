@@ -31,6 +31,12 @@ void main() async {
 
   final auth = AuthService();
   await auth.load();
+  // Fire-and-forget /health probe — learns whether the backend
+  // requires JWT auth so the router can decide between dashboard
+  // and /login. Open-by-default until the probe resolves, so a
+  // bare `flutter run` lands on the dashboard immediately.
+  // ignore: discarded_futures
+  auth.probeBackend();
 
   // Patient profile (display name, MRN, clinical notes) — kept in
   // memory so agent calls can attach it to /api/agent/* request bodies

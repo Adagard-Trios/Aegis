@@ -48,10 +48,17 @@ GoRouter buildAppRouter(AuthService auth) {
     initialLocation: '/',
     refreshListenable: auth,
     redirect: (context, state) {
-      final loggedIn = auth.isAuthenticated;
+      // Two-step gate:
+      //   1. If the backend doesn't require auth (MEDVERSE_AUTH_ENABLED
+      //      off, or unreachable / pre-probe), let the user through to
+      //      whatever they navigated to. Keeps `flutter run` working
+      //      out of the box against a vanilla backend.
+      //   2. Once the /health probe confirms auth IS required, bounce
+      //      unauthenticated users to /login. AuthService notifies the
+      //      router (refreshListenable) so this redirect re-runs.
       final atLogin = state.matchedLocation == '/login';
-      if (!loggedIn && !atLogin) return '/login';
-      if (loggedIn && atLogin) return '/';
+      if (auth.requiresLogin && !atLogin) return '/login';
+      if (auth.isAuthenticated && atLogin) return '/';
       return null;
     },
     routes: [

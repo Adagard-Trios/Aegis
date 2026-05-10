@@ -2318,8 +2318,16 @@ async def upload_image(
 
 @app.get("/health")
 async def health():
-    """Lightweight liveness probe for Render / load balancers."""
-    return {"status": "ok", "mock": using_mock, "ble_disabled": _truthy(os.environ.get("MEDVERSE_DISABLE_BLE"))}
+    """Lightweight liveness probe for Render / load balancers.
+    Mobile + web read `auth_enabled` to decide whether to gate the UI
+    behind a login screen — keeps `flutter run` working out of the box
+    against backends that haven't flipped MEDVERSE_AUTH_ENABLED on yet."""
+    return {
+        "status": "ok",
+        "mock": using_mock,
+        "ble_disabled": _truthy(os.environ.get("MEDVERSE_DISABLE_BLE")),
+        "auth_enabled": auth_enabled(),
+    }
 
 
 @app.get("/health/diagnostics")

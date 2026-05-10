@@ -20,9 +20,23 @@ class AuthService extends ChangeNotifier {
   String? _token;
   String? _username;
 
+  /// Whether the backend requires JWT auth (server-side
+  /// `MEDVERSE_AUTH_ENABLED=true`). Defaults to **false** so a fresh
+  /// `flutter run` against a vanilla backend works without a login —
+  /// `probeBackend()` upgrades this to `true` only when /health says
+  /// auth is required, at which point GoRouter's redirect kicks in
+  /// and bounces the user to /login.
+  bool _authRequired = false;
+  bool get authRequired => _authRequired;
+
   String? get token => _token;
   String? get username => _username;
   bool get isAuthenticated => _token != null && _token!.isNotEmpty;
+
+  /// True when the auth gate should block the user from app routes —
+  /// i.e. backend requires auth AND we don't have a token yet. The
+  /// router's redirect callback reads this.
+  bool get requiresLogin => _authRequired && !isAuthenticated;
 
   Future<void> load() async {
     try {
@@ -32,6 +46,28 @@ class AuthService extends ChangeNotifier {
       debugPrint('AuthService.load error: $e');
     }
     notifyListeners();
+  }
+
+  /// Hit /health to learn whether the backend requires auth. Fire-and-
+  /// forget — the router listens to this notifier and re-runs its
+  /// redirect when [_authRequired] flips. Safe to call repeatedly.
+  Future<void> probeBackend() async {
+    try {
+      final res = await http
+          .get(Uri.parse('${ApiConfig.baseUrl}/health'))
+          .timeout(const Duration(seconds: 90));
+      if (res.statusCode != 200) return;
+      final body = jsonDecode(res.body) as Map<String, dynamic>;
+      final flag = body['auth_enabled'];
+      if (flag is bool && flag != _authRequired) {
+        _authRequired = flag;
+        notifyListeners();
+      }
+    } catch (e) {
+      // Probe failure is non-fatal — keep the open-by-default state so
+      // an unreachable backend doesn't lock the user out.
+      debugPrint('AuthService.probeBackend error: $e');
+    }
   }
 
   Future<bool> login(String username, String password) async {
