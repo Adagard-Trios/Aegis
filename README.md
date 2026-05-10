@@ -63,7 +63,7 @@ The same telemetry stream drives a Next.js 16 dashboard — with a 3D React-Thre
 - **IMU-derived clinical biomarkers** — tremor-band FFT, gait symmetry, POTS detection, activity classification — all from sensors already on the vest.
 - **Twelve trainable ML pipelines + ten runtime adapters** — pipelines under [`models/<slug>/`](models/) cover ECG arrhythmia (PTB-XL), cardiac age, ECG biometric (Siamese), lung sound (ICBHI), Parkinson screener (UCI Parkinsons + WearGait-PD), fetal health (UCI CTG), preterm labour (TPEHGDB), skin disease (HAM10000), retinal disease + age (ODIR-5K + RETFound). Each has a runtime adapter under [src/ml/](src/ml/) (or [src/biometric/](src/biometric/) for the identity Siamese) that the matching specialty graph consumes through `_augment_with_ml_models()` — Cardiology / Pulmonary / Neurology / Dermatology / Obstetrics / Ocular all upgrade from "LLM-only" to structured-model-grounded as soon as you train + export each pipeline. Two synthetic-data pipelines (`stress_ans`, `bowel_motility`) ship as trainable scaffolds only, with no runtime adapters — see Phase 2.B notes.
 - **Federated learning skeleton** (Flower) — train across patients without their raw biometrics ever leaving their device.
-- **TimescaleDB-ready migration** (`alembic upgrade head`) — hypertables + continuous aggregates for the `/history` route.
+- **Postgres-ready migrations** (`alembic upgrade head`) — runs against any vanilla Postgres (Neon, Supabase, Render basic_256mb) or Timescale-enabled Postgres. Creates the full 9-table schema (telemetry, interpretations, patients, alerts, twin_snapshots, simulation_runs, consent_records, ledger_events, audit_log).
 - **Temporal "what-if" scrubbing** — switch the stream between `Live`, `6h`, `12h`, `24h`, `2w`, `4w` projections.
 - **3D digital twin** — GLTF human avatar that reacts in real time to HR, temp, posture, uterine contractions, and fetal kicks.
 - **Voice-enabled expert chat** — Web Speech API STT/TTS with markdown-streamed answers.
@@ -272,6 +272,24 @@ flutter pub get
 flutter run          # pick your target (android/ios/web/windows/macos/linux)
 ```
 
+The app boots straight to the Dashboard against the live `medverse-api.onrender.com` + `nivakaran-medverse.hf.space` defaults baked into [`api_config.dart`](mobile/aegis/lib/services/api_config.dart). Auto-detects whether the backend requires JWT auth (probes `/health.auth_enabled`) — bounces to the login screen only when actually required, so a vanilla `flutter run` doesn't dead-end at a login wall.
+
+Useful build-time overrides:
+
+```bash
+# Local dev against your own FastAPI + AI service
+flutter run --dart-define=USE_LOCAL_BACKEND=true
+
+# Specific LAN backend (phone-on-LAN testing)
+flutter run --dart-define=BACKEND_URL=http://192.168.1.42:8000
+
+# Bake the AI service's MEDVERSE_AI_KEY into the build so chat /
+# AI assessments work against a key-protected HF Space
+flutter run --dart-define=AI_KEY=<your-key>
+```
+
+Both backend + AI URLs can also be overridden at runtime via Settings → Backend connection — useful when sideloading an APK and pointing it at a self-hosted Render fork.
+
 ### 4. Firmware
 
 ```bash
@@ -336,7 +354,7 @@ All variables are loaded from [.env](.env) via `python-dotenv`. A complete, safe
 | `MEDVERSE_INCLUDE_WAVEFORM`       | `false`                                               | When `true`, `/stream` includes the raw 800-sample waveform buffers (needed by the ML adapters) |
 | `MEDVERSE_MODELS_DIR`             | `./models`                                            | Root searched by `src/ml/` and `src/biometric/` adapters for weight files |
 | `MEDVERSE_BIOMETRIC_THRESHOLD`    | `0.75`                                                | Cosine-similarity threshold for a positive biometric match |
-| `MEDVERSE_DB_URL`                 | *(unset)*                                             | Postgres/Timescale connection string. When set, telemetry + interpretation writes go to Postgres and `/api/history` reads from the `telemetry_vitals_*` continuous aggregates. |
+| `MEDVERSE_DB_URL`                 | *(unset)*                                             | Postgres connection string (works with Neon, Supabase, Render basic_256mb, Timescale Cloud — any vanilla Postgres). When set, telemetry + interpretation writes go to Postgres; `/api/history` aggregates on-the-fly via `date_trunc` + `AVG` over the JSONB blob. When unset, falls back to SQLite at `MEDVERSE_SQLITE_PATH`. |
 | `NEXT_PUBLIC_API_URL`             | `http://localhost:8000`                               | Frontend-side — points the Next.js dashboard at any backend host. See [frontend/.env.example](frontend/.env.example). |
 
 ### Federated-learning (optional)
@@ -376,7 +394,7 @@ All endpoints are defined in [app.py](app.py). Base URL: `http://localhost:8000`
 | GET    | `/stream?token=…&patient_id=…` | **SSE** — 10 Hz telemetry snapshot stream (with simulation-mode + PK/PD overlay). `token` required when `MEDVERSE_AUTH_ENABLED=true` (EventSource can't carry headers). |
 | GET    | `/api/snapshot?patient_id=…`  | Latest telemetry row from the active DB backend (falls back to live snapshot) |
 | GET    | `/api/interpretations?patient_id=…` | Latest AI interpretation per specialty |
-| GET    | `/api/history?resolution=1m\|1h&patient_id=…&limit=500` | Rolled-up HR / SpO₂ / BR / HRV time series — uses Timescale continuous aggregates when `MEDVERSE_DB_URL` is set, otherwise bucketed from SQLite |
+| GET    | `/api/history?resolution=1m\|1h&patient_id=…&limit=500` | Rolled-up HR / SpO₂ / BR / HRV time series. On Postgres: `date_trunc(...) + AVG()` over the raw telemetry JSONB. On SQLite: in-Python bucketing. Same response shape either way. |
 | GET    | `/api/patient/active`         | Returns the in-memory `ACTIVE_PATIENT_ID` used by the snapshot writer |
 | POST   | `/api/patient/active`         | Body: `{"patient_id": str}` — sets the writer's active patient |
 
@@ -574,33 +592,32 @@ All functions are tolerant of short or empty buffers (return zeros + `False` fla
 | Store                      | Location                  | What it holds |
 |----------------------------|---------------------------|---------------|
 | SQLite (default)           | [aegis_local.db](aegis_local.db) | `telemetry(id, timestamp_str, patient_id, data JSON)` and `interpretations(id, timestamp_str, patient_id, specialty, findings, severity, severity_score)`. Written at 1 Hz under `ACTIVE_PATIENT_ID` by `sqlite_writer_loop`. Indexed on `(patient_id, id DESC)`. |
-| PostgreSQL + TimescaleDB   | Postgres at `MEDVERSE_DB_URL` | Hypertables with the same columns (`ts TIMESTAMPTZ`, `data JSONB`), plus `telemetry_vitals_1m` / `telemetry_vitals_1h` continuous aggregates and a 30-day retention policy. [src/utils/db.py](src/utils/db.py) routes reads/writes here automatically when the env var is set. |
+| PostgreSQL                 | Postgres at `MEDVERSE_DB_URL` | 9-table schema (telemetry / interpretations / patients / alerts / twin_snapshots / simulation_runs / consent_records / ledger_events / audit_log) — same columns as the SQLite path with `TIMESTAMPTZ` + `JSONB` types. `/api/history` aggregates on-the-fly via `date_trunc + AVG` instead of materialised views, so the schema works against any vanilla Postgres (Neon, Supabase, Render basic_256mb). Timescale-only features (hypertables, continuous aggregates, retention policies) can be added in a follow-up migration on top. [src/utils/db.py](src/utils/db.py) routes reads/writes here automatically when the env var is set. |
 | Chroma vector store        | [chroma_data/](chroma_data/) | One collection per specialty (e.g. `cardiology_history`). Embeddings: HuggingFace `BioLORD-2023` (default) or `all-MiniLM-L6-v2` (fallback). |
 | LangGraph checkpoints      | [.langgraph_api/](.langgraph_api/) | `.langgraph_checkpoint.*.pckl`, `.langgraph_ops.pckl`, `store.*` — in-memory store snapshots persisted by `langgraph dev`. |
 
 ## TimescaleDB migration
 
-SQLite ([aegis_local.db](aegis_local.db)) is the default and requires no setup. A drop-in PostgreSQL + TimescaleDB migration is staged under [alembic/](alembic/) for when the data volume outgrows SQLite's JSON-blob scans.
+SQLite ([aegis_local.db](aegis_local.db)) is the default and requires no setup. Two Alembic migrations under [alembic/versions/](alembic/versions/) provision the same schema on Postgres for production deploys (the live free-tier setup uses Neon — see [Cloud deployment](#cloud-deployment-0mo-on-free-tiers)).
 
 ```bash
-# One-time: create the DB + enable the extension on your Postgres server
-createdb medverse
-psql medverse -c "CREATE EXTENSION IF NOT EXISTS timescaledb;"
-
-# Apply
-export MEDVERSE_DB_URL=postgresql+asyncpg://medverse:<pw>@localhost:5432/medverse
+# One-time: provision the DB on any Postgres provider (Neon / Supabase /
+# Render / self-hosted). No extensions required.
+export MEDVERSE_DB_URL='postgresql://user:pw@host:5432/dbname'
 alembic upgrade head
 ```
 
-The migration at [alembic/versions/001_timescale_init.py](alembic/versions/001_timescale_init.py) creates:
+Two migrations under [alembic/versions/](alembic/versions/):
 
-- **`telemetry`** hypertable — `id`, `patient_id`, `ts`, `data JSONB`, GIN index on `data`, composite index on `(patient_id, ts DESC)`.
-- **`interpretations`** hypertable — specialty + severity + severity_score, indexed on `(patient_id, specialty, ts DESC)`.
-- **`telemetry_vitals_1m`** continuous aggregate — 1-minute averages of HR / SpO₂ / BR / HRV.
-- **`telemetry_vitals_1h`** continuous aggregate — 1-hour averages.
-- 30-day retention policy on raw telemetry (aggregates keep forever).
+**[`001_timescale_init.py`](alembic/versions/001_timescale_init.py)** — base time-series tables:
+- `telemetry` — `id`, `patient_id`, `ts TIMESTAMPTZ`, `data JSONB` + GIN index on `data` + composite index on `(patient_id, ts DESC)`.
+- `interpretations` — specialty + severity + severity_score, indexed on `(patient_id, specialty, ts DESC)`.
 
-The FastAPI backend still reads/writes SQLite until you switch the writer loop in [src/utils/db.py](src/utils/db.py) — the migration is a ready-to-apply artifact, not an in-place replacement.
+**[`002_add_app_tables.py`](alembic/versions/002_add_app_tables.py)** — the rest of the app's persistence: `patients`, `alerts`, `twin_snapshots`, `simulation_runs`, `consent_records`, `ledger_events`, `audit_log`. Mirrors the inline SQLite `CREATE TABLE IF NOT EXISTS` calls in [src/utils/db.py](src/utils/db.py) with Postgres-native types (`BIGSERIAL`, `TIMESTAMPTZ`, `JSONB`).
+
+The runtime app picks the backend automatically — `MEDVERSE_DB_URL` set → Postgres, unset → SQLite. `/api/history` aggregates on-the-fly via `date_trunc + AVG` over the JSONB blob (Postgres) or in-Python bucketing (SQLite); no materialised views or extensions required.
+
+If you specifically want TimescaleDB hypertables + continuous aggregates + retention policies, add a `003_timescale_*.py` migration on top of these — the base schema is fully compatible.
 
 ## LangGraph topology
 
@@ -1127,7 +1144,7 @@ The 12 pipelines above produce sklearn baselines today; swapping each one for th
 | `fetal_connected` stays `false`                         | AbdomenMonitor not advertising, or COM3 is wrong for your setup — edit [PlatformIO/fetal_monitor/platformio.ini](PlatformIO/fetal_monitor/platformio.ini). |
 | `PATIENT_CYP2D6_STATUS` never updates                   | `/api/upload-lab-results` falls back to `Poor Metabolizer` when the upload is not a PNG/JPG or the vision call fails. |
 | `bleak` import fails                                    | `pip install bleak` — mock mode also kicks in automatically. |
-| `/api/history` returns an empty list                    | Stream data for a minute or two so SQLite accumulates rows. On Timescale, check that `CREATE EXTENSION timescaledb` ran and `alembic upgrade head` completed. |
+| `/api/history` returns an empty list                    | Stream data for a minute or two so the backend accumulates rows. Check `/health/diagnostics` shows `db_kind: postgres` (or `sqlite-default`) — if neither, the backend hit a connect error. |
 | History chart flatlines at 1 m resolution               | Not enough rows in the last minute — switch to `1h`. |
 | Sample rate mismatch (backend says 40, firmware on 250) | Read [Firmware sample-rate architecture](#firmware-sample-rate-architecture) first — the edit is in [config.h](PlatformIO/vest/src/config.h), not a `delay(25)` in `main.cpp`. After flashing the new firmware, set `MEDVERSE_SAMPLE_RATE=250` in `.env`. The active rate appears in `GET /api/status` so the frontend can verify sync. |
 | ECG window filled with repeating values                 | Vest is on pre-v3.3 firmware (still emitting `L1`/`L2`/`L3` scalars in the vitals payload, no burst characteristic). Reflash with the current firmware — the burst path delivers true 333 Hz on `beb5483e-…-26a9`. Backend warns `Optional char ... unavailable` when the burst char isn't exposed. |
@@ -1137,7 +1154,7 @@ The 12 pipelines above produce sklearn baselines today; swapping each one for th
 | ML adapters log "weights not found"                     | Expected until you train + drop files under `MEDVERSE_MODELS_DIR`. Graphs fall back to LLM-only. |
 | Chroma errors about dimension mismatch after model swap | Expected once — the new embedder creates a fresh collection. Old vectors persist under their old suffix until you delete `chroma_data/<key>_<old-model>/`. |
 | BioLORD first load is slow                              | The first call downloads ~1.5 GB of weights to the HF cache. Set `MEDVERSE_EMBEDDING_MODEL=sentence-transformers/all-MiniLM-L6-v2` to stay on the lighter model. |
-| `alembic upgrade head` fails with "extension not found" | Run `CREATE EXTENSION IF NOT EXISTS timescaledb;` in your Postgres before applying. |
+| `alembic upgrade head` fails with "relation already exists" | A previous incomplete run left the tables but didn't update `alembic_version`. Either drop the partial schema and re-run, or `alembic stamp head` if you're sure the schema is correct. |
 
 ## Security notice
 
@@ -1172,7 +1189,7 @@ The plan in `~/.claude/plans/do-these-or-don-t-staged-newt.md` (collaborative di
 - ✅ Biomedical RAG — default embedding swapped to `FremyCompany/BioLORD-2023`.
 - ✅ Runtime adapters scaffolded — ECGFounder, respiratory CNN, ECG biometric (weights pluggable).
 - ✅ Federated-learning client wired to real SQLite ECG windows + 3-layer 1-D CNN.
-- ✅ TimescaleDB migration under `alembic/` (hypertables + 1m/1h continuous aggregates).
+- ✅ Postgres migrations under `alembic/versions/` (9-table schema, vanilla-Postgres-compatible — Neon, Supabase, Render basic_256mb, Timescale Cloud).
 - ✅ Safe `.env.example` + `frontend/.env.example`; `.env`, local DBs, ML weights gitignored.
 - ✅ **12 self-contained ML pipelines** under `models/<slug>/` — one per source experiment notebook, each with its own `main.py` + `data_schema/schema.yaml` + 4-stage component graph.
 - ✅ **Cross-pipeline runner** [train_all.py](train_all.py) — invokes every pipeline with per-pipeline timeouts, classifies outcomes (ok / gated / timeout / fail), persists `train_all_results.json` incrementally, supports `--only` / `--skip` / `--large` filters.
