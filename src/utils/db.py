@@ -430,18 +430,27 @@ def get_history(
     """
     try:
         if _using_postgres():
-            view = "telemetry_vitals_1m" if resolution == "1m" else "telemetry_vitals_1h"
+            # Aggregate on-the-fly off the raw telemetry table. We
+            # deliberately skipped the Timescale continuous aggregates
+            # in migration 001 so plain Postgres (Neon, Supabase) works
+            # — date_trunc + AVG covers it for our row volumes.
+            trunc = "minute" if resolution == "1m" else "hour"
             conn = _pg_connect()
             cur = conn.cursor()
             cur.execute(
                 f"""
-                SELECT bucket, heart_rate_avg, spo2_avg, br_avg, hrv_avg
-                  FROM {view}
+                SELECT date_trunc(%s, ts) AS bucket,
+                       AVG((data->'vitals'->>'heart_rate')::float)     AS hr_avg,
+                       AVG((data->'vitals'->>'spo2')::float)           AS spo2_avg,
+                       AVG((data->'vitals'->>'breathing_rate')::float) AS br_avg,
+                       AVG((data->'vitals'->>'hrv_rmssd')::float)      AS hrv_avg
+                  FROM telemetry
                  WHERE patient_id=%s
+              GROUP BY bucket
               ORDER BY bucket DESC
                  LIMIT %s
                 """,
-                (patient_id, limit),
+                (trunc, patient_id, limit),
             )
             rows = cur.fetchall()
             conn.close()
