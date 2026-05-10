@@ -47,3 +47,9 @@ alembic.local.ini
 # PlatformIO build artefacts + accidental venvs inside firmware folders
 PlatformIO/**/.pio/
 PlatformIO/**/.venv/
+
+# Claude Code agent + session artefacts (local-only, never committed)
+.claude/
+# Backend log captures from `python app.py`/uvicorn dumps
+logs/
+*.log
