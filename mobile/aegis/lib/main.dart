@@ -15,6 +15,7 @@ import 'services/edge_anomaly_service.dart';
 import 'services/sync_queue_service.dart';
 import 'services/snapshot_uploader.dart';
 import 'services/ai_assessment_repository.dart';
+import 'services/patient_profile_service.dart';
 import 'ble/ble_connection_supervisor.dart';
 
 void main() async {
@@ -29,6 +30,12 @@ void main() async {
 
   final auth = AuthService();
   await auth.load();
+
+  // Patient profile (display name, MRN, clinical notes) — kept in
+  // memory so agent calls can attach it to /api/agent/* request bodies
+  // without an async secure-storage read on the hot path.
+  final patientProfile = PatientProfileService();
+  await patientProfile.load();
 
   final vestDataModel = VestDataModel();
   // Phase 4 IoMT services — wired into the stream service so each
@@ -73,12 +80,14 @@ void main() async {
   final aiRepo = AiAssessmentRepository(
     stream: vestStreamService,
     auth: auth,
+    profile: patientProfile,
   );
 
   runApp(
     MultiProvider(
       providers: [
         ChangeNotifierProvider.value(value: auth),
+        ChangeNotifierProvider.value(value: patientProfile),
         ChangeNotifierProvider.value(value: vestDataModel),
         Provider.value(value: vestStreamService),
         Provider.value(value: snapshotUploader),

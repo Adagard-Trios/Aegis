@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 
 import 'api_service.dart';
 import 'auth_service.dart';
+import 'patient_profile_service.dart';
 import 'vest_stream_service.dart';
 
 /// Cached store for per-specialty AI assessments.
@@ -21,6 +22,7 @@ import 'vest_stream_service.dart';
 class AiAssessmentRepository extends ChangeNotifier {
   final VestStreamService stream;
   final AuthService? auth;
+  final PatientProfileService? profile;
 
   static const Duration _minRefetchInterval = Duration(seconds: 30);
   static const double _hrChangeThreshold = 5.0;
@@ -30,7 +32,7 @@ class AiAssessmentRepository extends ChangeNotifier {
   /// the `specialty` field on /api/agent/ask).
   final Map<String, AiAssessmentEntry> _cache = {};
 
-  AiAssessmentRepository({required this.stream, this.auth});
+  AiAssessmentRepository({required this.stream, this.auth, this.profile});
 
   AiAssessmentEntry? entry(String specialty) => _cache[specialty];
 
@@ -65,6 +67,8 @@ class AiAssessmentRepository extends ChangeNotifier {
         message: 'Provide a concise current clinical assessment based on the '
             'latest telemetry. List key observations and any flags. Markdown OK.',
         snapshot: snapshot,
+        patientId: profile?.patientId,
+        patientProfile: profile?.agentPayload,
         auth: auth,
       );
 

@@ -107,10 +107,18 @@ class ApiService {
 
   /// POST /api/agent/ask — single-specialty Q&A.
   /// Backend pydantic schema names this field `message` — keep parity.
+  ///
+  /// [history] is the prior chat turns (last N, capped client-side) so
+  /// follow-up questions like "can you elaborate?" have context.
+  /// [patientProfile] carries display_name + clinical notes; the AI
+  /// graph reads them via `shared_context.patient_profile`.
   static Future<Map<String, dynamic>?> agentAsk({
     required String specialty,
     required String message,
     Map<String, dynamic>? snapshot,
+    String? patientId,
+    Map<String, dynamic>? patientProfile,
+    List<Map<String, String>>? history,
     AuthService? auth,
   }) async {
     try {
@@ -118,6 +126,9 @@ class ApiService {
         'specialty': specialty,
         'message': message,
         'snapshot': ?snapshot,
+        'patient_id': ?patientId,
+        'patient_profile': ?patientProfile,
+        'history': ?history,
       };
       final response = await http.post(
         Uri.parse('$aiBaseUrl/api/agent/ask'),
@@ -137,11 +148,15 @@ class ApiService {
   /// POST /api/agent/run-now — fan-out across all specialty experts.
   static Future<Map<String, dynamic>?> agentRunNow({
     Map<String, dynamic>? snapshot,
+    String? patientId,
+    Map<String, dynamic>? patientProfile,
     AuthService? auth,
   }) async {
     try {
       final body = <String, dynamic>{
         'snapshot': ?snapshot,
+        'patient_id': ?patientId,
+        'patient_profile': ?patientProfile,
       };
       final response = await http.post(
         Uri.parse('$aiBaseUrl/api/agent/run-now'),
@@ -162,12 +177,14 @@ class ApiService {
   static Future<Map<String, dynamic>?> complexDiagnosis({
     String patientId = 'medverse-demo-patient',
     Map<String, dynamic>? snapshot,
+    Map<String, dynamic>? patientProfile,
     AuthService? auth,
   }) async {
     try {
       final body = <String, dynamic>{
         'patient_id': patientId,
         'snapshot': ?snapshot,
+        'patient_profile': ?patientProfile,
       };
       final response = await http.post(
         Uri.parse('$aiBaseUrl/api/agent/complex-diagnosis'),

@@ -97,23 +97,39 @@ def _resolve_specialty(value: Optional[str]) -> str:
 # ─── Request models ─────────────────────────────────────────────────────────
 
 
+class ChatTurn(BaseModel):
+    """One prior chat exchange — role is 'user' or 'assistant'."""
+    role: str
+    content: str
+
+
 class AgentAskRequest(BaseModel):
     specialty: Optional[str] = None
     message: str
     snapshot: Optional[Dict[str, Any]] = None
     patient_id: Optional[str] = None
+    # Multi-turn chat: client sends the recent N turns so the LLM has
+    # context for follow-up questions ("can you elaborate on that?"). Cap
+    # this on the client (~6 turns is plenty) — we don't enforce here.
+    history: Optional[List[ChatTurn]] = None
+    # Patient demographics + clinically-relevant notes pulled from
+    # mobile's profile_settings_screen. Forwarded into shared_context
+    # so the graph can ground answers in who the patient actually is.
+    patient_profile: Optional[Dict[str, Any]] = None
 
 
 class AgentRunNowRequest(BaseModel):
     snapshot: Optional[Dict[str, Any]] = None
     patient_id: Optional[str] = None
     specialties: Optional[List[str]] = None
+    patient_profile: Optional[Dict[str, Any]] = None
 
 
 class ComplexDiagnosisRequest(BaseModel):
     patient_id: Optional[str] = None
     snapshot: Optional[Dict[str, Any]] = None
     fhir_history: Optional[List[Dict[str, Any]]] = None
+    patient_profile: Optional[Dict[str, Any]] = None
 
 
 # ─── Health ─────────────────────────────────────────────────────────────────
@@ -177,14 +193,43 @@ async def health_diagnostics():
 # ─── Agent endpoints ────────────────────────────────────────────────────────
 
 
-def _build_state(message: str, patient_id: str, snapshot: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+def _build_state(
+    message: str,
+    patient_id: str,
+    snapshot: Optional[Dict[str, Any]],
+    history: Optional[List[ChatTurn]] = None,
+    patient_profile: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Assemble the LangGraph initial state.
+
+    Prior turns from the client are prepended so the graph's reverse-walk
+    in interpretation_generation finds the latest user message (the new
+    one we just appended) but the LLM still sees the context above it.
+    """
+    msgs: List[Dict[str, Any]] = []
+    if history:
+        for turn in history:
+            role = (turn.role or "").strip().lower()
+            content = (turn.content or "").strip()
+            if not content:
+                continue
+            # Normalize 'assistant' / 'ai' / 'bot' → 'assistant'; everything
+            # else → 'user'. The graph only filters on 'user'/'human'.
+            normalized = "assistant" if role in ("assistant", "ai", "bot") else "user"
+            msgs.append({"role": normalized, "content": content})
+    msgs.append({"role": "user", "content": message})
+
+    shared: Dict[str, Any] = {
+        "patient_id": patient_id or "medverse-demo-patient",
+    }
+    if patient_profile:
+        shared["patient_profile"] = patient_profile
+
     return {
-        "messages": [{"role": "user", "content": message}],
+        "messages": msgs,
         "expert_domain": "",  # set by the graph
         "sensor_telemetry": snapshot or {},
-        "shared_context": {
-            "patient_id": patient_id or "medverse-demo-patient",
-        },
+        "shared_context": shared,
         "tool_results": {},
     }
 
@@ -198,7 +243,13 @@ async def api_agent_ask(req: AgentAskRequest):
     try:
         from src.graphs.graph_factory import build_expert_graph
         graph = build_expert_graph(specialty).compile()
-        state = _build_state(req.message, pid, req.snapshot)
+        state = _build_state(
+            req.message,
+            pid,
+            req.snapshot,
+            history=req.history,
+            patient_profile=req.patient_profile,
+        )
         result = graph.invoke(state)
 
         reply = ""
@@ -250,6 +301,7 @@ async def api_agent_run_now(req: AgentRunNowRequest):
                 f"Provide a current {spec.replace(' Expert', '').lower()} assessment.",
                 pid,
                 req.snapshot,
+                patient_profile=req.patient_profile,
             )
             out = graph.invoke(state)
             analysis = (out or {}).get("final_expert_analysis") or {}
@@ -288,6 +340,7 @@ async def api_agent_complex_diagnosis(req: ComplexDiagnosisRequest):
 
     initial_state = {
         "patient_id": pid,
+        "patient_profile": req.patient_profile or {},
         "sensor_telemetry": snapshot,
         "fhir_history": fhir_history,
         "ml_outputs": {},

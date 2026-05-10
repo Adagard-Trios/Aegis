@@ -11,6 +11,7 @@ import '../ble/ble_vest_service.dart';
 import '../services/api_config.dart';
 import '../services/api_service.dart';
 import '../services/auth_service.dart';
+import '../services/patient_profile_service.dart';
 import '../services/vest_stream_service.dart';
 
 /// Material 3 NavigationDrawer — quick-action sidebar.
@@ -297,9 +298,12 @@ class _ComplexDiagnosisTileState extends State<_ComplexDiagnosisTile> {
     setState(() => _running = true);
     final stream = context.read<VestStreamService>();
     final auth = context.read<AuthService>();
+    final profile = context.read<PatientProfileService>();
     try {
       final result = await ApiService.complexDiagnosis(
+        patientId: profile.patientId,
         snapshot: stream.latestSnapshot,
+        patientProfile: profile.agentPayload,
         auth: auth,
       );
       if (!mounted) return;

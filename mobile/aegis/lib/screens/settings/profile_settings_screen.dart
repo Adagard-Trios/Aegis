@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
-import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:provider/provider.dart';
 
 import '../../services/ai_assessment_repository.dart';
+import '../../services/patient_profile_service.dart';
 
 /// Patient profile editor — backs the `patient_id` field every backend
 /// call uses. Persists to `flutter_secure_storage` so it survives
@@ -16,11 +16,6 @@ class ProfileSettingsScreen extends StatefulWidget {
 }
 
 class _ProfileSettingsScreenState extends State<ProfileSettingsScreen> {
-  static const _patientIdKey = 'aegis.patient_id';
-  static const _displayNameKey = 'aegis.display_name';
-  static const _notesKey = 'aegis.patient_notes';
-  final _storage = const FlutterSecureStorage();
-
   final _patientIdCtrl = TextEditingController();
   final _displayNameCtrl = TextEditingController();
   final _notesCtrl = TextEditingController();
@@ -40,19 +35,24 @@ class _ProfileSettingsScreenState extends State<ProfileSettingsScreen> {
   }
 
   Future<void> _restore() async {
-    try {
-      _patientIdCtrl.text = await _storage.read(key: _patientIdKey) ?? 'medverse-demo-patient';
-      _displayNameCtrl.text = await _storage.read(key: _displayNameKey) ?? '';
-      _notesCtrl.text = await _storage.read(key: _notesKey) ?? '';
-    } catch (_) {/* secure storage failure is non-fatal */}
+    final profile = context.read<PatientProfileService>();
+    // The service is loaded at app start (main._restorePreferences →
+    // PatientProfileService.load), but re-read here so we pick up any
+    // mutations from another instance of this screen.
+    await profile.load();
+    _patientIdCtrl.text = profile.patientId;
+    _displayNameCtrl.text = profile.displayName;
+    _notesCtrl.text = profile.notes;
     if (mounted) setState(() => _loading = false);
   }
 
   Future<void> _save() async {
     try {
-      await _storage.write(key: _patientIdKey, value: _patientIdCtrl.text.trim());
-      await _storage.write(key: _displayNameKey, value: _displayNameCtrl.text.trim());
-      await _storage.write(key: _notesKey, value: _notesCtrl.text.trim());
+      await context.read<PatientProfileService>().save(
+            patientId: _patientIdCtrl.text,
+            displayName: _displayNameCtrl.text,
+            notes: _notesCtrl.text,
+          );
       // Patient changed → flush AI assessment cache so cached text from
       // the previous patient context doesn't leak.
       if (mounted) {

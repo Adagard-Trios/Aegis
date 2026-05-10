@@ -1,6 +1,26 @@
 from langchain_groq import ChatGroq
 import os
 
+
+# Maps a specialty (as used in EXPERT_TOOLS / EXPERT_SYSTEM_PROMPTS) to
+# the env var name actually set in render.yaml + the HF Space dashboard.
+# These names are irregular ("Pulmonology" → PULMONARY, "Obstetrics" →
+# GYNECOLOGY, "Ocular" → OCULOMETRIC, "General Physician" → no _EXPERT
+# suffix), so we use an explicit table instead of string transforms.
+# Falls back to the shared GROQ_API_KEY when a specialty isn't listed.
+_SPECIALTY_ENV_VAR = {
+    "Cardiology Expert":  "CARDIOLOGY_EXPERT_GROQ_API_KEY",
+    "Pulmonology Expert": "PULMONARY_EXPERT_GROQ_API_KEY",
+    "Pulmonary Expert":   "PULMONARY_EXPERT_GROQ_API_KEY",
+    "Neurology Expert":   "NEUROLOGY_EXPERT_GROQ_API_KEY",
+    "Dermatology Expert": "DERMATOLOGY_EXPERT_GROQ_API_KEY",
+    "Obstetrics Expert":  "GYNECOLOGY_EXPERT_GROQ_API_KEY",
+    "Gynecology Expert":  "GYNECOLOGY_EXPERT_GROQ_API_KEY",
+    "Ocular Expert":      "OCULOMETRIC_EXPERT_GROQ_API_KEY",
+    "General Physician":  "GENERAL_PHYSICIAN_GROQ_API_KEY",
+}
+
+
 class GroqLLM:
     """
     Groq LLM wrapper.
@@ -13,12 +33,7 @@ class GroqLLM:
 
     def get_llm(self):
         try:
-            # Fallback to general API key if specialty-specific one isn't found
-            env_var = "GROQ_API_KEY"
-            if self.specialty:
-                clean_spec = self.specialty.upper().replace(" EXPERT", "").replace(" ", "_").replace("/", "_")
-                env_var = f"GROQ_API_KEY_{clean_spec}"
-            
+            env_var = _SPECIALTY_ENV_VAR.get((self.specialty or "").strip(), "GROQ_API_KEY")
             groq_api_key = os.getenv(env_var) or os.getenv("GROQ_API_KEY")
 
             llm = ChatGroq(

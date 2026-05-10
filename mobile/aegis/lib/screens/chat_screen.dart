@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 
 import '../services/api_service.dart';
 import '../services/auth_service.dart';
+import '../services/patient_profile_service.dart';
 import '../services/vest_stream_service.dart';
 import '../widgets/chat/composer.dart';
 import '../widgets/chat/experts.dart';
@@ -140,6 +141,9 @@ class _ChatScreenState extends State<ChatScreen> {
       // headers, but pass through regardless so a future flip of the
       // flag doesn't silently break this path.
       final auth = context.read<AuthService>();
+      // Patient identity + clinical notes so the LLM can ground its
+      // answer in who the patient actually is.
+      final profile = context.read<PatientProfileService>();
 
       // Compose the message — if an image is attached, mention it in
       // the prompt so the agent knows imaging is available.
@@ -147,10 +151,18 @@ class _ChatScreenState extends State<ChatScreen> {
           ? '$text\n\n[Patient attached an image at $imagePath]'.trim()
           : text;
 
+      // Last few turns for multi-turn context. Cap at 6 (3 user + 3
+      // assistant) to keep the request body bounded — older turns are
+      // semantically less important than the latest exchange.
+      final history = _recentHistoryForApi(maxTurns: 6);
+
       final reply = await ApiService.agentAsk(
         specialty: _persona.id,
         message: composed.isEmpty ? 'Please review my current state.' : composed,
         snapshot: snapshot,
+        patientId: profile.patientId,
+        patientProfile: profile.agentPayload,
+        history: history,
         auth: auth,
       );
 
@@ -188,6 +200,34 @@ class _ChatScreenState extends State<ChatScreen> {
       });
       debugPrint('[ChatScreen] agentAsk failed: $e');
     }
+  }
+
+  /// Build the chat history payload sent to the agent. Skips the seeded
+  /// greeting + persona-switch system bubbles (no question/answer
+  /// information for the LLM) and walks backwards to keep the most
+  /// recent [maxTurns] real exchanges.
+  List<Map<String, String>> _recentHistoryForApi({int maxTurns = 6}) {
+    // The current turn (just appended above as `isUser: true`) is the
+    // one being asked NOW — exclude it from "history".
+    final past = _messages.length > 1
+        ? _messages.sublist(0, _messages.length - 1)
+        : const <_ChatMessage>[];
+
+    final out = <Map<String, String>>[];
+    for (final m in past.reversed) {
+      // Skip persona-switch / greeting markers — they start with '*' or
+      // are the very first assistant bubble with no user before it.
+      final trimmed = m.text.trim();
+      if (!m.isUser && (trimmed.startsWith('*Switched to') || trimmed.startsWith('Hi —'))) {
+        continue;
+      }
+      out.add({
+        'role': m.isUser ? 'user' : 'assistant',
+        'content': m.text,
+      });
+      if (out.length >= maxTurns) break;
+    }
+    return out.reversed.toList(growable: false);
   }
 
   void _scrollToBottom() {
