@@ -255,16 +255,23 @@ def _make_interpretation_generation(specialty: str):
 
         # Pull the user's actual question out of state["messages"] so it
         # reaches the LLM. Without this the chat is just a generic
-        # assessment regardless of what was typed.
+        # assessment regardless of what was typed. Walk backwards because
+        # the prior information_retrieval node appended its own
+        # AIMessage after the user's question, so messages[-1] is the
+        # status note, not the question.
         user_message = ""
         msgs = state.get("messages") or []
-        if msgs:
-            last = msgs[-1]
-            user_message = (
-                last.get("content")
-                if isinstance(last, dict)
-                else getattr(last, "content", "")
-            )
+        for msg in reversed(msgs):
+            if isinstance(msg, dict):
+                role = msg.get("role") or msg.get("type") or ""
+                content = msg.get("content", "")
+            else:
+                # langchain BaseMessage: HumanMessage.type == "human"
+                role = getattr(msg, "type", "") or msg.__class__.__name__.lower()
+                content = getattr(msg, "content", "")
+            if role in ("user", "human", "humanmessage") and content:
+                user_message = content
+                break
         user_message = (user_message or "").strip()
 
         # Format tool results for the prompt
