@@ -29,6 +29,10 @@ mobile/
 frontend/
 PlatformIO/
 
+# AI service code — its own deploy on HF Spaces, not needed in the
+# Render image (Render proxies /api/agent/* to it via httpx).
+services/
+
 # ML pipeline data caches — gigabytes of downloaded datasets we
 # never want inside the image. Trained-runtime weights live under
 # MEDVERSE_MODELS_DIR (mounted from the persistent disk on Render),

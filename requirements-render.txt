@@ -1,0 +1,50 @@
+# Slim requirements for the Render deployment (free tier, 512 MB RAM).
+#
+# AI / agent stack (langchain, langgraph, chromadb, sentence-transformers,
+# torch, CUDA wheels) lives on Hugging Face Spaces — see
+# services/medverse-ai/requirements.txt. Render proxies /api/agent/* to
+# that Space via MEDVERSE_AI_BASE_URL, so the heavy deps aren't needed
+# here.
+#
+# Use the full requirements.txt for local development if you want to run
+# the AI graphs locally (no proxy).
+
+# ── Core web server ────────────────────────────────────────────────────────
+fastapi
+uvicorn
+pydantic
+python-dotenv
+python-multipart
+
+# ── HTTP client for the HF Spaces agent proxy ──────────────────────────────
+httpx
+requests>=2.31
+
+# ── DSP / feature extraction (always used at boot) ─────────────────────────
+numpy
+scipy
+
+# ── Direct Groq SDK (used by /api/agent/complex-diagnosis vision path) ─────
+groq
+
+# ── Persistence layer ──────────────────────────────────────────────────────
+SQLAlchemy>=2.0
+alembic>=1.13
+asyncpg>=0.29
+psycopg2-binary>=2.9
+
+# ── FHIR R4 interop ────────────────────────────────────────────────────────
+fhir.resources>=7.0.0
+
+# ── Auth ───────────────────────────────────────────────────────────────────
+PyJWT>=2.8.0
+
+# ── BLE (only used in local dev — disabled on Render via MEDVERSE_DISABLE_BLE) ─
+bleak
+
+# ── Tabular helpers used by some endpoints (history exports, model adapters) ─
+pandas>=2.0
+scikit-learn>=1.4
+PyYAML>=6.0
+tqdm>=4.66
+openpyxl>=3.1

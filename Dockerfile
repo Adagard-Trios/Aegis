@@ -25,10 +25,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Build wheels into /wheels so the runtime stage can pip-install
-# from the local cache without re-downloading anything.
+# from the local cache without re-downloading anything. Uses the slim
+# requirements-render.txt (no langchain / langgraph / sentence-transformers
+# / torch / CUDA) — those live on the HF Spaces AI service instead.
 WORKDIR /build
-COPY requirements.txt .
-RUN pip wheel --no-cache-dir --wheel-dir /wheels -r requirements.txt
+COPY requirements-render.txt .
+RUN pip wheel --no-cache-dir --wheel-dir /wheels -r requirements-render.txt
 
 
 # ── Stage 2: runtime ────────────────────────────────────────────────
@@ -45,14 +47,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Drop privileges — Render runs containers as root by default but
-# defensive defaults never hurt.
+# defensive defaults never hurt. /app must be owned by medverse so the
+# app can create SQLite/uploads inside the WORKDIR (chown of COPYed
+# files isn't enough — the directory itself was created as root by
+# WORKDIR and would otherwise be 755 root:root).
 RUN useradd --create-home --uid 1000 medverse
 WORKDIR /app
+RUN chown medverse:medverse /app
 
 # Install pre-built wheels from the build stage.
 COPY --from=build /wheels /wheels
-COPY requirements.txt .
-RUN pip install --no-cache-dir --no-index --find-links=/wheels -r requirements.txt \
+COPY requirements-render.txt .
+RUN pip install --no-cache-dir --no-index --find-links=/wheels -r requirements-render.txt \
     && rm -rf /wheels
 
 # Application code. Heavy paths excluded via .dockerignore (frontend,
