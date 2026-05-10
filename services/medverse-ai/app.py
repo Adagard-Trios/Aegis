@@ -25,8 +25,49 @@ from pydantic import BaseModel
 
 load_dotenv()  # picks up .env when run locally; HF Spaces env vars override
 
+
+# ─── Logging ────────────────────────────────────────────────────────────────
+#
+# Default: human-readable timestamped format for local dev.
+# Production: set MEDVERSE_LOG_FORMAT=json on the Space → emits one JSON
+# object per record, machine-parseable by HF's log viewer / observability
+# pipelines.
+
+class _JsonLogFormatter(logging.Formatter):
+    """Minimal JSON log formatter. No external deps (python-json-logger
+    isn't worth the dep just for this)."""
+    def format(self, record: logging.LogRecord) -> str:
+        import json
+        out = {
+            "ts": self.formatTime(record, datefmt="%Y-%m-%dT%H:%M:%S%z"),
+            "level": record.levelname,
+            "logger": record.name,
+            "msg": record.getMessage(),
+        }
+        if record.exc_info:
+            out["exc"] = self.formatException(record.exc_info)
+        return json.dumps(out, default=str)
+
+
+def _configure_logging() -> None:
+    handler = logging.StreamHandler()
+    use_json = (os.environ.get("MEDVERSE_LOG_FORMAT") or "").strip().lower() == "json"
+    handler.setFormatter(
+        _JsonLogFormatter() if use_json else logging.Formatter(
+            "%(asctime)s %(levelname)-7s %(name)s | %(message)s",
+            datefmt="%H:%M:%S",
+        )
+    )
+    root = logging.getLogger()
+    # Strip any handler basicConfig (or the prior import order) added.
+    for h in list(root.handlers):
+        root.removeHandler(h)
+    root.addHandler(handler)
+    root.setLevel(logging.INFO)
+
+
+_configure_logging()
 logger = logging.getLogger(__name__)
-logging.basicConfig(level=logging.INFO)
 
 
 # ─── App + CORS ─────────────────────────────────────────────────────────────
@@ -88,6 +129,64 @@ def require_ai_key(request: Request) -> None:
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Missing or invalid X-Medverse-Ai-Key.",
         )
+
+
+# ─── Rate limit ─────────────────────────────────────────────────────────────
+#
+# Free Groq tier has request + token caps; a runaway client looping
+# /api/agent/ask would burn the budget in seconds. In-memory token
+# bucket keyed by API-key value (or by client IP when no key is in use).
+# Cap is generous enough for a real demo (30 calls / minute / key) but
+# tight enough that an accidental loop trips the brake before billing
+# does.
+
+import time
+from collections import defaultdict, deque
+from threading import Lock as _RLLock
+
+_RATE_LIMIT_PER_MINUTE = int(os.environ.get("MEDVERSE_AI_RATE_PER_MIN") or "30")
+_RATE_BUCKETS: Dict[str, "deque[float]"] = defaultdict(deque)
+_RATE_LOCK = _RLLock()
+
+
+def _rate_key(request: Request) -> str:
+    """Bucket per AI key when present, else per client IP — so a leaked
+    key gets isolated and an unauthenticated demo doesn't share one
+    bucket across the world."""
+    presented = (request.headers.get(_AI_KEY_HEADER) or "").strip()
+    if presented:
+        return f"key:{presented}"
+    client = request.client
+    return f"ip:{client.host}" if client else "ip:unknown"
+
+
+def rate_limit(request: Request) -> None:
+    """Sliding-window 60s rate limit. 429 + Retry-After when exceeded.
+    Free tier safety: protects the Groq budget against runaway loops.
+    Disabled when MEDVERSE_AI_RATE_PER_MIN<=0."""
+    if _RATE_LIMIT_PER_MINUTE <= 0:
+        return
+    now = time.monotonic()
+    cutoff = now - 60.0
+    key = _rate_key(request)
+    with _RATE_LOCK:
+        bucket = _RATE_BUCKETS[key]
+        # Drop calls older than 60 s.
+        while bucket and bucket[0] < cutoff:
+            bucket.popleft()
+        if len(bucket) >= _RATE_LIMIT_PER_MINUTE:
+            # Time until the oldest call ages out → that's when the
+            # caller can try again.
+            retry_after = max(1, int(60.0 - (now - bucket[0])) + 1)
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail=(
+                    f"Rate limit exceeded ({_RATE_LIMIT_PER_MINUTE}/min). "
+                    f"Try again in {retry_after}s."
+                ),
+                headers={"Retry-After": str(retry_after)},
+            )
+        bucket.append(now)
 
 
 # ─── Specialty resolution ───────────────────────────────────────────────────
@@ -256,6 +355,7 @@ async def health_diagnostics():
         "ml_adapters": adapters,
         "cors_origins": _cors_origins,
         "ai_key_required": bool(_REQUIRED_AI_KEY),
+        "rate_limit_per_min": _RATE_LIMIT_PER_MINUTE,
     }
 
 
@@ -303,7 +403,7 @@ def _build_state(
     }
 
 
-@app.post("/api/agent/ask", dependencies=[Depends(require_ai_key)])
+@app.post("/api/agent/ask", dependencies=[Depends(require_ai_key), Depends(rate_limit)])
 async def api_agent_ask(req: AgentAskRequest):
     """Synchronous expert-graph invocation. Same shape as the original
     Render endpoint — mobile / dashboard need only swap the host."""
@@ -349,7 +449,7 @@ async def api_agent_ask(req: AgentAskRequest):
         }
 
 
-@app.post("/api/agent/run-now", dependencies=[Depends(require_ai_key)])
+@app.post("/api/agent/run-now", dependencies=[Depends(require_ai_key), Depends(rate_limit)])
 async def api_agent_run_now(req: AgentRunNowRequest):
     """Fan out across all 7 specialties (or the subset requested) and
     return the assessment dict per specialty."""
@@ -387,7 +487,7 @@ async def api_agent_run_now(req: AgentRunNowRequest):
     return {"status": "ok", "patient_id": pid, "results": results}
 
 
-@app.post("/api/agent/complex-diagnosis", dependencies=[Depends(require_ai_key)])
+@app.post("/api/agent/complex-diagnosis", dependencies=[Depends(require_ai_key), Depends(rate_limit)])
 async def api_agent_complex_diagnosis(req: ComplexDiagnosisRequest):
     """Run the collaborative diagnosis graph (proposer → background →
     skeptic → ranker → diagnoser → narrator). Returns ranked candidate

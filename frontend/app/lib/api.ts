@@ -15,6 +15,26 @@ export const API_URL =
   (typeof process !== "undefined" && process.env && process.env.NEXT_PUBLIC_API_URL) ||
   "http://localhost:8000";
 
+/**
+ * Host that handles `/api/agent/*` calls. Defaults to the bundled
+ * Hugging Face Space deployment because Render's free tier (512 MB)
+ * OOMs on LangGraph. When NEXT_PUBLIC_AI_URL is unset (e.g. local dev
+ * with USE_LOCAL_BACKEND=true on the backend side), falls back to
+ * API_URL so the dev backend still receives them.
+ */
+export const AI_URL =
+  (typeof process !== "undefined" && process.env && process.env.NEXT_PUBLIC_AI_URL) ||
+  API_URL;
+
+/**
+ * Shared key the AI service requires on every /api/agent/* call.
+ * Bake into the build via NEXT_PUBLIC_AI_KEY in .env.local. Falls back
+ * to no header when unset (matches MEDVERSE_AI_KEY unset on the Space).
+ */
+export const AI_KEY =
+  (typeof process !== "undefined" && process.env && process.env.NEXT_PUBLIC_AI_KEY) ||
+  "";
+
 export const TOKEN_STORAGE_KEY = "medverse_token";
 
 export function getToken(): string | null {
@@ -80,6 +100,30 @@ export async function apiPost<T>(path: string, body: unknown): Promise<T> {
       "Content-Type": "application/json",
       ...authHeaders(),
     },
+    body: JSON.stringify(body),
+  });
+  if (res.status === 401) {
+    handle401();
+    throw new Error(`POST ${path} → 401`);
+  }
+  if (!res.ok) throw new Error(`POST ${path} → ${res.status}`);
+  return res.json() as Promise<T>;
+}
+
+/**
+ * Like [apiPost] but routes to AI_URL (HF Space) and attaches the
+ * X-Medverse-Ai-Key header. Used by every /api/agent/* helper so
+ * agents go direct to HF — saves the Render → HF cold-start chain.
+ */
+async function aiPost<T>(path: string, body: unknown): Promise<T> {
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    ...authHeaders(),
+  };
+  if (AI_KEY) headers["X-Medverse-Ai-Key"] = AI_KEY;
+  const res = await fetch(`${AI_URL}${path}`, {
+    method: "POST",
+    headers,
     body: JSON.stringify(body),
   });
   if (res.status === 401) {
@@ -312,14 +356,20 @@ export interface AgentResponse {
 }
 
 export function askAgent(specialty: string, message: string, patient_id?: string) {
-  return apiPost<AgentResponse>("/api/agent/ask", { specialty, message, patient_id });
+  return aiPost<AgentResponse>("/api/agent/ask", { specialty, message, patient_id });
 }
 
 export function runAgentNow(patient_id?: string, specialty?: string) {
-  const qs = new URLSearchParams();
-  if (patient_id) qs.set("patient_id", patient_id);
-  if (specialty) qs.set("specialty", specialty);
-  return apiPost<{ status: string; ran: string[] }>(`/api/agent/run-now?${qs}`, {});
+  // HF Space's /api/agent/run-now expects a JSON body (specialties +
+  // patient_id), not query params. Keep query-string fallback for
+  // backward compat with any older proxy in front of the Space.
+  const body: Record<string, unknown> = {};
+  if (patient_id) body.patient_id = patient_id;
+  if (specialty) body.specialties = [specialty];
+  return aiPost<{ status: string; ran?: string[]; results?: Record<string, unknown> }>(
+    "/api/agent/run-now",
+    body,
+  );
 }
 
 // ─── Collaborative diagnosis (Phase 1 of agentic upgrade) ─────────
@@ -367,9 +417,9 @@ export interface ComplexDiagnosisResponse {
 }
 
 export function runComplexDiagnosis(patient_id?: string) {
-  const qs = new URLSearchParams();
-  if (patient_id) qs.set("patient_id", patient_id);
-  return apiPost<ComplexDiagnosisResponse>(`/api/agent/complex-diagnosis?${qs}`, {});
+  const body: Record<string, unknown> = {};
+  if (patient_id) body.patient_id = patient_id;
+  return aiPost<ComplexDiagnosisResponse>("/api/agent/complex-diagnosis", body);
 }
 
 // ─── Image upload (Phase 2.A: feeds retina / skin runtime adapters) ─

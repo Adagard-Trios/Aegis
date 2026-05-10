@@ -23,6 +23,47 @@ load_dotenv()
 import numpy as np
 from scipy.signal import butter, filtfilt, find_peaks
 import logging
+import os as _os_log
+
+
+# ─── Structured logging ─────────────────────────────────────────────────────
+# Set MEDVERSE_LOG_FORMAT=json on Render to emit machine-parseable JSON
+# records (timestamps, level, logger name, message). Default is the
+# human-readable format for local dev.
+
+class _JsonLogFormatter(logging.Formatter):
+    def format(self, record: logging.LogRecord) -> str:
+        import json
+        out = {
+            "ts": self.formatTime(record, datefmt="%Y-%m-%dT%H:%M:%S%z"),
+            "level": record.levelname,
+            "logger": record.name,
+            "msg": record.getMessage(),
+        }
+        if record.exc_info:
+            out["exc"] = self.formatException(record.exc_info)
+        return json.dumps(out, default=str)
+
+
+def _configure_logging() -> None:
+    handler = logging.StreamHandler()
+    use_json = (_os_log.environ.get("MEDVERSE_LOG_FORMAT") or "").strip().lower() == "json"
+    handler.setFormatter(
+        _JsonLogFormatter() if use_json else logging.Formatter(
+            "%(asctime)s %(levelname)-7s %(name)s | %(message)s",
+            datefmt="%H:%M:%S",
+        )
+    )
+    root = logging.getLogger()
+    for h in list(root.handlers):
+        root.removeHandler(h)
+    root.addHandler(handler)
+    root.setLevel(logging.INFO)
+
+
+_configure_logging()
+
+
 from fastapi import FastAPI, UploadFile, File, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse

@@ -71,54 +71,91 @@ Open `http://localhost:3000` and walk through:
 
 ## Deploy
 
-Backend on **Render**, frontend on **Vercel**, database on **Timescale Cloud free tier**. Total monthly cost ~$7 (Render Starter; Vercel + Timescale free tiers).
+Three free hosts, **$0/mo total**:
 
-### Pre-flight (one-time, ~15 min)
+```
+Mobile + Web frontend
+        │
+        ├── /api/snapshot/*  /api/history  /api/patients/*  /health  ──► Render free (512 MB)
+        │       Data plane: FastAPI core, FHIR, image upload
+        │
+        └── /api/agent/*  (chat, AI assessments, complex-diagnosis)  ──► HF Spaces free (16 GB)
+                AI plane: LangGraph + Chroma + Groq client
+```
 
-1. Rotate the Groq API key at https://console.groq.com/keys. Save the new `gsk_...` value.
-2. Generate a JWT secret:
+The split exists because LangGraph + Chroma + sentence-transformers don't fit in Render free's 512 MB. See [README §Cloud deployment](README.md) for the full architecture, env-var reference, and upgrade paths.
+
+### Pre-flight (~10 min)
+
+1. **Rotate Groq API key** at https://console.groq.com/keys. Save the new `gsk_...` value.
+2. **Generate two random keys** (JWT secret + AI service shared key):
    ```bash
-   python -c "import secrets; print(secrets.token_urlsafe(48))"
+   python -c "import secrets; print('JWT:', secrets.token_urlsafe(48)); print('AI:', secrets.token_urlsafe(32))"
    ```
-3. Sign up at https://console.cloud.timescale.com → **Create service** (free tier) → copy the connection string. Replace `postgresql://` with `postgresql+asyncpg://`.
+3. **(Optional, recommended)** Create a Neon Postgres at https://console.neon.tech (free 3 GB, no expiry) and copy the connection string. Skip to use ephemeral SQLite (wipes on every Render redeploy).
 
-### Render (backend, ~30 min)
+### HF Space (AI plane, ~10 min)
 
-1. https://render.com → **New + → Blueprint** → connect this GitHub repo. Render reads [render.yaml](render.yaml) automatically.
-2. Set the four `sync: false` env vars in the Render dashboard:
+1. https://huggingface.co/new-space → SDK **Docker**, Hardware **CPU basic** (free, 16 GB RAM), Visibility **Public**.
+2. **Settings → Variables and secrets** → **New secret**:
    - `GROQ_API_KEY` = your rotated key
-   - `MEDVERSE_JWT_SECRET` = the generated secret
-   - `MEDVERSE_DB_URL` = your Timescale Cloud async URL
-   - `MEDVERSE_CORS_ORIGINS` = leave blank (you'll fill it after Vercel deploys)
-3. **Apply Changes** → first build ~5 min.
-4. Run the schema migration once: Render dashboard → **Shell** → `alembic upgrade head`.
-5. Copy the Render URL (e.g., `https://medverse-api.onrender.com`).
+   - `MEDVERSE_AI_KEY` = the AI key from pre-flight step 2
+3. Generate a Write-scoped HF token at https://huggingface.co/settings/tokens.
+4. Push the AI service code:
+   ```bash
+   HF_USERNAME=<your-username> HF_SPACE=<space-name> HF_TOKEN=hf_xxx ./scripts/deploy-hf.sh
+   ```
+   First build ~8 min. **Revoke the token immediately after** — see [services/medverse-ai/DEPLOY.md](services/medverse-ai/DEPLOY.md) for token-hygiene notes.
+5. Verify:
+   ```bash
+   curl https://<your-username>-<space-name>.hf.space/health/diagnostics
+   ```
+
+### Render (data plane, ~10 min)
+
+1. https://render.com → **New + → Blueprint** → connect this GitHub repo. Render reads [render.yaml](render.yaml) automatically (free plan, Docker runtime, no disk).
+2. Set the env vars in the Render dashboard:
+   - `GROQ_API_KEY` = your rotated key (only used as fallback when the proxy fails)
+   - `MEDVERSE_AI_BASE_URL` = `https://<your-username>-<space-name>.hf.space` (where `/api/agent/*` proxies to)
+   - `MEDVERSE_AI_KEY` = same AI key as the Space (proxy attaches it)
+   - `MEDVERSE_JWT_SECRET` = JWT secret from pre-flight step 2
+   - `MEDVERSE_AUTH_ENABLED=true` (turns on JWT-required mode)
+   - `MEDVERSE_DEV_USERNAME=demo` + `MEDVERSE_DEV_PASSWORD=<value>` (the single dev login the API issues tokens for)
+   - **(Optional)** `MEDVERSE_DB_URL` = your Neon connection string (leave unset for ephemeral SQLite)
+   - **(Optional)** `MEDVERSE_CORS_ORIGINS` = your Vercel URL once that's live
+3. **Apply Changes** → first build ~3 min.
+4. Verify: `curl https://<render-service>.onrender.com/health/diagnostics` — `groq_client.ok: true`, all flag fields green.
 
 ### Vercel (frontend, ~10 min)
 
 1. https://vercel.com → **Add New → Project** → import this repo.
 2. **Root Directory** = `frontend` (Vercel offers to detect; confirm).
-3. Set environment variable: `NEXT_PUBLIC_API_URL` = your Render URL from step 5 above.
+3. Set environment variables (see [frontend/.env.example](frontend/.env.example)):
+   - `NEXT_PUBLIC_API_URL` = your Render URL
+   - `NEXT_PUBLIC_AI_URL` = your HF Space URL
+   - `NEXT_PUBLIC_AI_KEY` = same AI key as Render + Space
+   - `NEXT_PUBLIC_AUTH_REQUIRED=true`
 4. Deploy. ~3 min. Push-to-`main` redeploys automatically thereafter.
-5. Copy the Vercel URL.
 
 ### Close the loop
 
-Back in the Render dashboard, set `MEDVERSE_CORS_ORIGINS = https://<your-vercel-url>` → Render auto-redeploys.
+Back on Render → set `MEDVERSE_CORS_ORIGINS = https://<your-vercel-url>` → auto-redeploys.
 
 ### Verify
 
 | Check | Expected |
 |---|---|
-| `https://<render-url>/health` | `{"status":"ok","mock":true,"ble_disabled":true}` |
-| `https://<render-url>/docs` | Swagger UI loads |
-| `https://<vercel-url>/` | Dashboard loads, STREAMING badge green within 5 s |
-| `https://<vercel-url>/digital-twin` | 3D model + PK/PD panel visible |
+| `https://<render-url>/health` | `{"status":"ok","mock":true,"ble_disabled":true}` (~30 s on first request after sleep) |
+| `https://<render-url>/health/diagnostics` | All flags green; `groq_client.ok: true`; `db_kind: postgres` if Neon wired |
+| `https://<hf-space>.hf.space/health/diagnostics` | `langgraph.ok: true`; both `ml_adapters.*.is_loaded: true`; `ai_key_required: true`; `rate_limit_per_min: 30` |
+| `https://<render-url>/api/agent/ask` (POST without `X-Medverse-Ai-Key`) | Render proxy forwards → HF Space → 401 |
+| `https://<vercel-url>/login` | Sign-in with `MEDVERSE_DEV_USERNAME` / `_PASSWORD` → Dashboard loads |
 
 ## Security defaults
 
-- `MEDVERSE_AUTH_ENABLED=false` by default — flip to `true` and set `MEDVERSE_JWT_SECRET` to a strong value to lock down `/api/**` and `/stream`.
-- CORS is **not** wildcard. `MEDVERSE_CORS_ORIGINS` defaults to `http://localhost:3000,http://127.0.0.1:3000`. Override for prod.
+- `MEDVERSE_AUTH_ENABLED=true` in this setup — every `/api/**` route requires a valid Bearer token. JWT issued by `POST /api/auth/login` against the dev creds. Per-patient access control: an authenticated request can't read another user's `patient_id` (returns 403).
+- CORS on Render: `MEDVERSE_CORS_ORIGINS` allowlist. CORS on HF Space: defaults to a tight allowlist (Render proxy + localhost), override via `MEDVERSE_AI_CORS_ORIGINS`.
+- HF Space rate-limit: 30 calls/min per AI-key (or per IP). Override via `MEDVERSE_AI_RATE_PER_MIN`.
 - The JWT secret has no insecure fallback — production startup hard-fails if auth is enabled without a strong secret set.
 
 ## Troubleshooting

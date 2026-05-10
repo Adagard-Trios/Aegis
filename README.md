@@ -1430,6 +1430,65 @@ When the free tier becomes the bottleneck:
 | Need image uploads to persist | Render Starter + 1 GB persistent disk ($0.25/mo) — update `MEDVERSE_UPLOADS_DIR` to point at the mount |
 | One agent call at a time slows other requests | Render Standard ($25/mo, 2 GB) lets you flip `MEDVERSE_AI_BASE_URL` off and run LangGraph locally on Render too — eliminates the proxy hop |
 
+## Future work
+
+These were intentionally deferred from the current free-tier setup —
+each is a meaningful project on its own and would distract from the
+"$0/mo working demo" goal if bundled in.
+
+- **Real multi-tenant access control.** Today every authenticated user
+  owns one `patient_id` (their JWT `sub`). A real clinical deployment
+  needs a `users` table, a `patient_users` mapping table, and row-level
+  security on every snapshot/history/alert query. The `_resolve_patient_id`
+  enforcement in [`app.py`](app.py) is the hook point — extend it to
+  read `user["allowed_patients"]` from a real DB lookup instead of the
+  current "matches `sub`" check.
+- **Training the remaining 10 ML adapters.** Two pickles ship in
+  [`services/medverse-ai/models/`](services/medverse-ai/models/) (fetal
+  health + Parkinson screener, ~4 MB total). The other ten adapters in
+  [`src/ml/`](src/ml/) load weight files that don't exist yet. Each has
+  a `models/<pipeline>/export_runtime.py` that produces the runtime
+  pickle once the training pipeline finishes — most need Kaggle / HF
+  dataset access. ECGFounder + the respiratory CNN are scaffolds only;
+  they need PyTorch weights authored from scratch.
+- **Streaming chat responses.** Groq supports streaming tokens and
+  LangGraph passes them through; the current agent endpoint waits for
+  the full response before returning. Mobile would need an SSE or
+  chunked-encoding handler in [`api_service.dart`](mobile/aegis/lib/services/api_service.dart);
+  HF Space's `/api/agent/ask` would switch from `return` to a
+  `StreamingResponse`.
+- **HIPAA / GDPR posture.** Real telemetry currently flows to Groq's
+  cloud + HF Space's logs. A clinical deployment needs a BAA with
+  Groq, regional hosting (HF + Render data residency), audit logs
+  (the `audit()` calls in `app.py` already write to SQLite —
+  expose / export them), data-retention policies, and patient
+  consent UI. None of these are blockers for a research demo but
+  all are required for production.
+- **Clinical peer-review of the knowledge base.** The seven
+  [`src/knowledge/*.md`](src/knowledge/) files are author-written —
+  each should be reviewed by a board-certified specialist in that
+  domain before any output is shown to a real patient.
+- **Automated test coverage for the AI graphs.** Today only the DSP
+  layer has unit tests (`test/dsp/`). The graph factory + each
+  specialty graph + the complex-diagnosis flow should have at least
+  smoke tests that mock Groq + assert the JSON-output contract.
+- **Cold-start "waking up" banner UI.** Phase 2.1 added 90 s timeouts
+  and a foreground pre-warm, but mobile still shows just a spinner
+  during the first ~30 s after a Render/HF wake. A dedicated banner
+  ("MedVerse is starting up — first request after idle takes ~30 s")
+  would close the perception gap. The pattern in
+  [`offline_banner.dart`](mobile/aegis/lib/widgets/offline_banner.dart)
+  is the right reusable starting point.
+- **Web frontend deployment + AI URL config.** [`frontend/`](frontend/)
+  isn't deployed publicly yet; when it ships (Vercel free tier), it'll
+  need a `NEXT_PUBLIC_AI_URL` env var so it can call HF Spaces
+  directly instead of going through Render's proxy (saves a cold start).
+- **Per-patient encrypted vault for chat history.** Chat conversations
+  + thumbs-up/down feedback currently persist to mobile's
+  `flutter_secure_storage` only. A real deployment would sync these
+  to a per-patient encrypted vault on the backend so a clinician can
+  audit what was said + what the patient flagged as unhelpful.
+
 ## License
 
 [MIT](LICENSE) © 2026 MedVerse Contributors.
