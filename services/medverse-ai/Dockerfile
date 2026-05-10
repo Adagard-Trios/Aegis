@@ -20,10 +20,12 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
 
-# App code + bundled data (rare-disease KB used by complex-diagnosis).
+# App code + bundled data (rare-disease KB used by complex-diagnosis)
+# + ML adapter weights (sklearn pickles for the deployed pipelines).
 COPY app.py .
 COPY src/ ./src/
 COPY data/ ./data/
+COPY models/ ./models/
 
 # HF Spaces convention: container exposes 7860, app listens on $PORT.
 ENV PORT=7860

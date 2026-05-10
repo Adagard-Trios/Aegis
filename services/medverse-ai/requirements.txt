@@ -25,3 +25,12 @@ pydantic
 python-dotenv
 tenacity
 numpy
+
+# Tabular ML adapters (fetal_health, parkinson_screener, etc.) — load
+# pickled sklearn pipelines from models/. graph_factory's
+# _augment_with_ml_models calls these per specialty; missing weights
+# degrade silently (returns nothing). Pandas needed for the 1-row
+# DataFrame the preprocessor expects.
+scikit-learn
+pandas
+joblib

@@ -170,6 +170,34 @@ async def health_diagnostics():
     except Exception as e:
         langgraph_err = str(e)[:200]
 
+    # ML adapter state — surface which weight pickles loaded so deploy
+    # smoke tests can spot a missing/incompatible model without grepping
+    # logs. Each accessor wraps in try/except because adapters that
+    # hit a heavy import (e.g. ecgfounder needs torch) shouldn't sink
+    # the whole diagnostics call.
+    adapters: Dict[str, Dict[str, Any]] = {}
+
+    def _probe(name: str, getter):
+        try:
+            adapter = getter()
+            adapters[name] = {
+                "is_loaded": bool(getattr(adapter, "is_loaded", False)),
+                "weights_path": getattr(adapter, "weights_path", None),
+            }
+        except Exception as e:
+            adapters[name] = {"is_loaded": False, "error": str(e)[:160]}
+
+    try:
+        from src.ml.fetal_health_adapter import get_fetal_health
+        _probe("fetal_health", get_fetal_health)
+    except Exception as e:
+        adapters["fetal_health"] = {"is_loaded": False, "error": f"import: {e}"[:160]}
+    try:
+        from src.ml.parkinson_screener_adapter import get_parkinson_screener
+        _probe("parkinson_screener", get_parkinson_screener)
+    except Exception as e:
+        adapters["parkinson_screener"] = {"is_loaded": False, "error": f"import: {e}"[:160]}
+
     return {
         "status": "ok",
         "service": "medverse-ai",
@@ -186,6 +214,7 @@ async def health_diagnostics():
         },
         "groq_client": {"ok": groq_ok, "error": groq_err},
         "langgraph": {"ok": langgraph_ok, "error": langgraph_err},
+        "ml_adapters": adapters,
         "cors_origins": _cors_origins,
     }
 
