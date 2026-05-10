@@ -181,8 +181,31 @@ class PickledTabularAdapter:
         if hasattr(self._model, "predict_proba"):
             try:
                 probs = self._model.predict_proba(x)[0]
-                if self.LABELS and len(self.LABELS) == len(probs):
-                    out["probs"] = {self.LABELS[i]: float(p) for i, p in enumerate(probs)}
+                # IMPORTANT: probs[i] corresponds to self._model.classes_[i],
+                # NOT self.LABELS[i] — sklearn sorts classes_ alphabetically.
+                # Zipping with LABELS directly mismatches probabilities with
+                # the wrong class names (e.g. "Term"/"PretermRisk" gets
+                # swapped because alphabetical "PretermRisk" sorts first).
+                model_classes = list(getattr(self._model, "classes_", []))
+                if self.LABELS and len(self.LABELS) == len(probs) and model_classes:
+                    out["probs"] = {}
+                    for cls, p in zip(model_classes, probs):
+                        # Normalise the class to whatever LABELS uses —
+                        # numeric class index or string. For string
+                        # classes, the class IS the label.
+                        if isinstance(cls, str):
+                            out["probs"][cls] = float(p)
+                        else:
+                            try:
+                                cidx = next(
+                                    (i for i, c in enumerate(model_classes)
+                                     if abs(float(c) - float(cls)) < 1e-6),
+                                    None,
+                                )
+                                key = self.LABELS[cidx] if cidx is not None and cidx < len(self.LABELS) else f"class_{cls}"
+                            except Exception:
+                                key = f"class_{cls}"
+                            out["probs"][key] = float(p)
                 else:
                     out["probs"] = {f"class_{i}": float(p) for i, p in enumerate(probs)}
                 out["confidence"] = float(max(probs))
