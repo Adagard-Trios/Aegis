@@ -2257,6 +2257,86 @@ async def health():
     return {"status": "ok", "mock": using_mock, "ble_disabled": _truthy(os.environ.get("MEDVERSE_DISABLE_BLE"))}
 
 
+@app.get("/health/diagnostics")
+async def health_diagnostics():
+    """Deeper boot-state probe for ops: which env vars are set, whether
+    storage paths are writable, whether the Groq client constructs.
+    Never leaks secret *values* — only whether they are present."""
+    import sys
+    import platform
+    from pathlib import Path
+
+    def _present(key: str) -> bool:
+        return bool((os.environ.get(key) or "").strip())
+
+    def _writable(p: Optional[str]) -> Dict[str, Any]:
+        if not p:
+            return {"path": None, "exists": False, "writable": False}
+        try:
+            Path(p).mkdir(parents=True, exist_ok=True)
+            probe = Path(p) / ".medverse_write_probe"
+            probe.write_text("ok")
+            probe.unlink(missing_ok=True)
+            return {"path": p, "exists": True, "writable": True}
+        except Exception as e:
+            return {"path": p, "exists": Path(p).exists(), "writable": False, "error": str(e)[:160]}
+
+    groq_ok = False
+    groq_err: Optional[str] = None
+    try:
+        # Constructing the client doesn't make a network call — just validates
+        # the key exists and the SDK loads. A real /api/agent/ask still needs
+        # the key to be valid at Groq's side.
+        from groq import Groq as _Groq
+        key = (os.environ.get("GROQ_API_KEY") or "").strip()
+        if not key:
+            groq_err = "GROQ_API_KEY not set"
+        else:
+            _Groq(api_key=key)
+            groq_ok = True
+    except Exception as e:
+        groq_err = str(e)[:200]
+
+    db_url = (os.environ.get("MEDVERSE_DB_URL") or "").strip()
+    db_kind = "postgres" if db_url.startswith(("postgres://", "postgresql")) else (
+        "sqlite" if db_url.startswith("sqlite") else ("sqlite-default" if not db_url else "other")
+    )
+
+    return {
+        "status": "ok",
+        "runtime": {
+            "python": sys.version.split()[0],
+            "platform": platform.platform(),
+        },
+        "flags": {
+            "MEDVERSE_DISABLE_BLE": _truthy(os.environ.get("MEDVERSE_DISABLE_BLE")),
+            "MEDVERSE_DISABLE_AGENT_LOOP": _truthy(os.environ.get("MEDVERSE_DISABLE_AGENT_LOOP")),
+            "MEDVERSE_AUTH_ENABLED": _truthy(os.environ.get("MEDVERSE_AUTH_ENABLED")),
+            "using_mock": using_mock,
+        },
+        "secrets_present": {
+            "GROQ_API_KEY": _present("GROQ_API_KEY"),
+            "CARDIOLOGY_EXPERT_GROQ_API_KEY": _present("CARDIOLOGY_EXPERT_GROQ_API_KEY"),
+            "PULMONARY_EXPERT_GROQ_API_KEY": _present("PULMONARY_EXPERT_GROQ_API_KEY"),
+            "NEUROLOGY_EXPERT_GROQ_API_KEY": _present("NEUROLOGY_EXPERT_GROQ_API_KEY"),
+            "DERMATOLOGY_EXPERT_GROQ_API_KEY": _present("DERMATOLOGY_EXPERT_GROQ_API_KEY"),
+            "GYNECOLOGY_EXPERT_GROQ_API_KEY": _present("GYNECOLOGY_EXPERT_GROQ_API_KEY"),
+            "OCULOMETRIC_EXPERT_GROQ_API_KEY": _present("OCULOMETRIC_EXPERT_GROQ_API_KEY"),
+            "GENERAL_PHYSICIAN_GROQ_API_KEY": _present("GENERAL_PHYSICIAN_GROQ_API_KEY"),
+            "MEDVERSE_JWT_SECRET": _present("MEDVERSE_JWT_SECRET"),
+        },
+        "groq_client": {"ok": groq_ok, "error": groq_err},
+        "storage": {
+            "MEDVERSE_SQLITE_PATH": os.environ.get("MEDVERSE_SQLITE_PATH"),
+            "uploads": _writable(os.environ.get("MEDVERSE_UPLOADS_DIR")),
+            "chroma":  _writable(os.environ.get("CHROMA_PERSIST_DIR")),
+            "models":  _writable(os.environ.get("MEDVERSE_MODELS_DIR")),
+            "db_kind": db_kind,
+            "db_url_set": bool(db_url),
+        },
+    }
+
+
 # =============================================================
 # PATIENTS (Phase 3)
 # =============================================================
