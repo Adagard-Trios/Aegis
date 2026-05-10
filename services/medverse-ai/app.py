@@ -325,16 +325,27 @@ async def health_diagnostics():
         except Exception as e:
             adapters[name] = {"is_loaded": False, "error": str(e)[:160]}
 
-    try:
-        from src.ml.fetal_health_adapter import get_fetal_health
-        _probe("fetal_health", get_fetal_health)
-    except Exception as e:
-        adapters["fetal_health"] = {"is_loaded": False, "error": f"import: {e}"[:160]}
-    try:
-        from src.ml.parkinson_screener_adapter import get_parkinson_screener
-        _probe("parkinson_screener", get_parkinson_screener)
-    except Exception as e:
-        adapters["parkinson_screener"] = {"is_loaded": False, "error": f"import: {e}"[:160]}
+    # Probe every sklearn adapter that ships a pickle. The two PyTorch
+    # adapters (ecgfounder, pulmonary_classifier) are intentionally
+    # skipped here — they lazy-import torch which would slow down the
+    # diagnostics endpoint by several seconds.
+    _adapter_probes = [
+        ("fetal_health",       "fetal_health_adapter",       "get_fetal_health"),
+        ("parkinson_screener", "parkinson_screener_adapter", "get_parkinson_screener"),
+        ("ecg_arrhythmia",     "ecg_arrhythmia_adapter",     "get_ecg_arrhythmia"),
+        ("cardiac_age",        "cardiac_age_adapter",        "get_cardiac_age"),
+        ("lung_sound",         "lung_sound_adapter",         "get_lung_sound"),
+        ("preterm_labour",     "preterm_labour_adapter",     "get_preterm_labour"),
+        ("skin_disease",       "skin_disease_adapter",       "get_skin_disease"),
+        ("retinal_disease",    "retinal_disease_adapter",    "get_retinal_disease"),
+        ("retinal_age",        "retinal_age_adapter",        "get_retinal_age"),
+    ]
+    for name, mod_name, fn_name in _adapter_probes:
+        try:
+            mod = __import__(f"src.ml.{mod_name}", fromlist=[fn_name])
+            _probe(name, getattr(mod, fn_name))
+        except Exception as e:
+            adapters[name] = {"is_loaded": False, "error": f"import: {e}"[:160]}
 
     return {
         "status": "ok",
