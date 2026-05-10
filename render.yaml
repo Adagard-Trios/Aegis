@@ -13,79 +13,53 @@
 # value if you only set GROQ_API_KEY — per-specialty overrides only
 # matter when you want independent rate-limit accounting.
 #
-# Plan choice: **standard** ($25/mo, 2 GB RAM) — comfortable for
-# LangGraph + Chroma + sklearn adapters together. Drop to **starter**
-# ($7/mo, 1 GB) only if you also flip `MEDVERSE_DISABLE_AGENT_LOOP=true`
-# and accept that Chroma RAG history will OOM on first index. **Free**
-# is unsuitable: 30-second cold starts after 15 min idle ruin SSE +
-# the snapshot-ingest loop misses windows.
+# Plan choice: **free** — current setup, $0/mo. Trade-offs:
+#   • Service sleeps after 15 min idle (30–60 s cold start on next req)
+#   • No persistent disk available on free tier — Chroma RAG history,
+#     SQLite chats/snapshots, and uploaded images all reset on every
+#     redeploy. The app falls back to ephemeral paths inside /app and
+#     keeps working; data just doesn't survive deploys.
+#   • 750 build-hours/mo limit (one service fits comfortably)
+# Upgrade to **starter** ($7/mo, 512 MB) to add a persistent disk +
+# always-on; **standard** ($25/mo, 2 GB) for production-quality LLM
+# concurrency.
 
 services:
   - type: web
     name: medverse-api
-    # Docker runtime — see Dockerfile + docker-entrypoint.sh. The Python
-    # buildpack runtime works too, but disks mounted under any path get
-    # root-owned permissions and the buildpack's app user can't chown
-    # them. Docker fixes this because the entrypoint runs as root and
-    # drops privileges via gosu after chown'ing the disk.
+    # Docker runtime — see Dockerfile + docker-entrypoint.sh. Required
+    # over the Python buildpack because Render's buildpack runs the app
+    # as a non-root user that can't chown a mounted disk; Docker lets
+    # the entrypoint chown as root and drop privileges via gosu before
+    # exec'ing the app. Harmless on free tier (no disk to chown) but
+    # the right default for any future paid tier with persistence.
     runtime: docker
     dockerfilePath: ./Dockerfile
-    plan: standard
+    plan: free
     region: oregon
     healthCheckPath: /health
     autoDeploy: true
 
-    # Persistent disk for Chroma RAG history + uploaded lab/skin/retinal
-    # images. Without this, both reset on every redeploy. 1 GB is
-    # enough for the bundled rare-disease KB + a few hundred uploads.
-    #
-    # NB: mount paths under /var/ get restrictive root-owned perms on
-    # Render's Python runtime (non-root app process can't write). Use
-    # /data instead — the runtime user has write access there.
-    disk:
-      name: medverse-data
-      mountPath: /data
-      sizeGB: 1
+    # No `disk:` — free tier doesn't support persistent disks. App uses
+    # ephemeral paths inside /app: ./aegis_local.db, ./chroma_data,
+    # ./uploads. All wiped on every redeploy. Add a disk + bump plan to
+    # starter when you need persistence.
 
     envVars:
-      - key: PYTHON_VERSION
-        value: 3.13.0
-
       # ── Architecture flags ────────────────────────────────────────
       # Cloud has no Bluetooth radio. Mobile is the BLE master and
       # pushes snapshots via /api/snapshot/ingest.
       - key: MEDVERSE_DISABLE_BLE
         value: "true"
       # Background agent loop runs every 60 s by default — costs Groq
-      # tokens with no user driving it. Flip on if you want continuous
-      # alerting; off is fine when the mobile app drives requests.
+      # tokens with no user driving it. Mandatory off on free tier so
+      # the app sleeps cleanly after 15 min idle.
       - key: MEDVERSE_DISABLE_AGENT_LOOP
         value: "true"
       # Auth off by default; flip to "true" + set MEDVERSE_JWT_SECRET
       # when the frontend ships JWT login.
       - key: MEDVERSE_AUTH_ENABLED
         value: "false"
-
-      # ── Storage paths (mounted to the persistent disk above) ──────
-      # SQLite fallback if MEDVERSE_DB_URL isn't set. Both Postgres
-      # and SQLite go through the same migrations.
-      - key: MEDVERSE_SQLITE_PATH
-        value: /data/medverse.db
-      # Chroma vector store (per-specialty history collections).
-      - key: CHROMA_PERSIST_DIR
-        value: /data/chroma
-      # Uploaded clinical images (skin + retinal) live here. The
-      # /api/upload-image route writes <patient>/<modality>/<ts>.png.
-      - key: MEDVERSE_UPLOADS_DIR
-        value: /data/uploads
-
-      # ── Models / runtime adapters ─────────────────────────────────
-      # The 12 trainable pipelines under models/<slug>/ download large
-      # datasets (PTB-XL = 25 GB, ISIC = 25 GB) on first train — way
-      # past Render's disk cap. Train + export weights locally; the
-      # runtime adapters look here for the pickle files.
-      - key: MEDVERSE_MODELS_DIR
-        value: /data/models
 
       # ── User-supplied secrets (set in the Render dashboard) ───────
       # Either set the shared GROQ_API_KEY only (every specialty falls
@@ -112,10 +86,11 @@ services:
       - key: MEDVERSE_JWT_SECRET
         sync: false
 
-      # Postgres / Timescale (preferred). Use `postgresql+asyncpg://`
-      # prefix; src/utils/db.py normalises for psycopg2 internally.
-      # Provision via the Render Postgres add-on or any managed PG.
-      # If unset, falls back to SQLite at MEDVERSE_SQLITE_PATH.
+      # Postgres URL — leave unset on free tier (SQLite fallback works).
+      # To wire managed Postgres later: provision via Render dashboard
+      # (basic_256mb $6/mo) OR BYO (Neon free tier, Supabase) and paste
+      # the connection string here. App normalises postgres:// to the
+      # right driver in src/utils/db.py.
       - key: MEDVERSE_DB_URL
         sync: false
 
@@ -128,11 +103,11 @@ services:
         sync: false
 
   # ── Postgres (omitted intentionally) ────────────────────────────────
-  # The app falls back to SQLite at MEDVERSE_SQLITE_PATH (mounted on
-  # the persistent disk above). To use Postgres later, either:
-  #   1. Provision via Render dashboard (New → PostgreSQL, current
-  #      plans: free, basic_256mb, basic_1gb, basic_4gb), copy the
-  #      Internal Database URL into MEDVERSE_DB_URL, redeploy.
-  #   2. BYO Postgres (Neon free tier, Supabase, Timescale Cloud) and
-  #      paste the connection string into MEDVERSE_DB_URL.
-  # Both paths trigger Alembic migrations on first boot.
+  # The app falls back to SQLite (ephemeral on free tier — wiped on
+  # redeploy). To add managed Postgres:
+  #   1. Render dashboard → New → PostgreSQL → pick `free` (90-day) or
+  #      `basic_256mb` ($6/mo). Copy the Internal Database URL into
+  #      MEDVERSE_DB_URL above and redeploy.
+  #   2. BYO: Neon free tier or Supabase free tier. Same drill — paste
+  #      the connection string into MEDVERSE_DB_URL.
+  # Both trigger Alembic migrations on first boot.
