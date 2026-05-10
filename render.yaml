@@ -127,14 +127,12 @@ services:
       - key: MEDVERSE_CORS_ORIGINS
         sync: false
 
-  # ── Postgres (Render-managed) ───────────────────────────────────────
-  # Comment out if you'd rather BYO Postgres (Timescale Cloud, Neon,
-  # Supabase, etc.) and just paste the connection string into
-  # MEDVERSE_DB_URL above. Render's free PG expires after 90 days; the
-  # paid Starter is $7/mo and covers the snapshot + alerts + ledger
-  # write rate this app actually generates.
-databases:
-  - name: medverse-pg
-    plan: starter
-    databaseName: medverse
-    user: medverse
+  # ── Postgres (omitted intentionally) ────────────────────────────────
+  # The app falls back to SQLite at MEDVERSE_SQLITE_PATH (mounted on
+  # the persistent disk above). To use Postgres later, either:
+  #   1. Provision via Render dashboard (New → PostgreSQL, current
+  #      plans: free, basic_256mb, basic_1gb, basic_4gb), copy the
+  #      Internal Database URL into MEDVERSE_DB_URL, redeploy.
+  #   2. BYO Postgres (Neon free tier, Supabase, Timescale Cloud) and
+  #      paste the connection string into MEDVERSE_DB_URL.
+  # Both paths trigger Alembic migrations on first boot.
