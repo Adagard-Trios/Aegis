@@ -1301,62 +1301,134 @@ The runtime weight directories (`models/<domain>/`) are gitignored — built loc
 - **POTS calibration**: empirical threshold validation against a real sit-to-stand trial.
 - **Deps**: `pip install -r requirements.txt`, `cd frontend && npm install`, `cd mobile/aegis && flutter pub get` — picks up `psycopg2-binary`, `recharts`, `flutter_secure_storage`.
 
-## Deploying the backend on Render
+## Cloud deployment ($0/mo on free tiers)
 
-The backend is cloud-ready — no Bluetooth radio needed in the cloud because the **mobile app owns BLE end-to-end** (the redesign moved scan/connect/parse onto the phone; the backend now only receives snapshots via `POST /api/snapshot/ingest` and runs the AI / FHIR / persistence pieces).
+The cloud deploy is split across **two free hosts** because LangGraph + Chroma + sentence-transformers don't fit in Render free's 512 MB RAM:
+
+```
+Mobile / Web frontend
+        │
+        ├── /api/snapshot/*  /api/history  /api/patients/*  /health  ──► Render free (512 MB)
+        │       https://medverse-api.onrender.com
+        │       Hosts: FastAPI core, snapshot ingest, FHIR, image uploads,
+        │       SSE telemetry fallback. SQLite fallback (ephemeral on free tier).
+        │
+        └── /api/agent/*     (chat, AI assessments, complex-diagnosis)  ──► HF Spaces free (16 GB)
+                https://nivakaran-medverse.hf.space
+                Hosts: LangGraph + langchain-groq + Chroma RAG + the 7
+                specialty graphs + the collaborative-diagnosis graph.
+                Source: services/medverse-ai/
+```
+
+**Total cost: $0/mo.** Trade-offs: both services sleep when idle (Render after 15 min, HF after 48 hrs) and take ~30 s to wake on first request. SQLite on Render is wiped on redeploy.
+
+Live URLs:
+- Render (data plane): <https://medverse-api.onrender.com>
+- HF Space (AI):       <https://nivakaran-medverse.hf.space>
 
 ### Files
 
 | File | Purpose |
 |---|---|
-| [`render.yaml`](render.yaml) | Render Blueprint — declares the web service (Standard plan, 2 GB RAM), a 1 GB persistent disk mounted at `/var/medverse`, all required env vars, and an optional Render-managed Postgres add-on. |
-| [`Dockerfile`](Dockerfile) | Multi-stage Python 3.13-slim build. Render auto-detects this and uses it instead of the buildpack. Portable to Fly.io / Cloud Run / ECS. |
-| [`.dockerignore`](.dockerignore) | Excludes `mobile/`, `frontend/`, `PlatformIO/`, dataset caches — keeps the runtime image ~1.1 GB. |
+| [`render.yaml`](render.yaml) | Render Blueprint — free plan, Docker runtime, no disk. Declares the architecture flags (`MEDVERSE_DISABLE_BLE=true`, `MEDVERSE_DISABLE_AGENT_LOOP=true`) plus all `sync: false` secrets. |
+| [`Dockerfile`](Dockerfile) | Multi-stage Python 3.13-slim build for Render. Uses [`requirements-render.txt`](requirements-render.txt) (slim — no langchain/langgraph/sentence-transformers). Drops to non-root `medverse` user via gosu after [`docker-entrypoint.sh`](docker-entrypoint.sh) chowns the WORKDIR. |
+| [`requirements-render.txt`](requirements-render.txt) | Render-only deps — FastAPI + DSP + persistence + FHIR + the Groq SDK proxy path. **Doesn't** include the AI graph stack (those live in [`services/medverse-ai/requirements.txt`](services/medverse-ai/requirements.txt)). |
+| [`requirements.txt`](requirements.txt) | Full local-dev deps (everything in `requirements-render.txt` plus the AI stack). Use this when running the agent graphs locally without proxying to HF. |
+| [`services/medverse-ai/`](services/medverse-ai/) | Self-contained FastAPI for HF Spaces. Hosts only `/api/agent/*` + `/health*`. Pushed to a separate HF Space repo at deploy time. |
+| [`alembic/env.py`](alembic/env.py) | Schema migrations — no-ops cleanly when `MEDVERSE_DB_URL` is unset (free-tier SQLite mode). Runs Postgres migrations when wired to a real DB later. |
+| [`.dockerignore`](.dockerignore) | Excludes `mobile/`, `frontend/`, `PlatformIO/`, `services/`, dataset caches — keeps the Render image ~250 MB. |
 
-### One-time setup
+### One-time setup — Render (data plane)
 
 1. **Push this repo** to GitHub.
-2. **New Blueprint** on Render → connect the repo → Render reads `render.yaml` and provisions the web service + Postgres + disk in one click.
-3. **Fill the secrets** in the Render dashboard (these were marked `sync: false` so they're never committed):
-   - `GROQ_API_KEY` (required)
-   - `CARDIOLOGY_EXPERT_GROQ_API_KEY` … `GENERAL_PHYSICIAN_GROQ_API_KEY` (optional — fall back to the shared key)
-   - `MEDVERSE_DB_URL` — set to the Render Postgres `DATABASE_URL` from the dashboard, with the prefix replaced from `postgres://` to `postgresql+asyncpg://`. Skip this and the backend falls back to SQLite at `/var/medverse/medverse.db` (persistent across redeploys via the disk).
-   - `MEDVERSE_CORS_ORIGINS` — your frontend domain(s), comma-separated (e.g. `https://medverse.vercel.app`).
+2. **New + → Blueprint** on Render → connect the repo → Render reads `render.yaml` and provisions a single web service. No disk, no Postgres (free tier doesn't support disks; SQLite fallback handles persistence).
+3. **Fill the secrets** in the Render dashboard (all marked `sync: false`):
+   - `GROQ_API_KEY` (required — only matters if you ever fall back to local agent execution; the proxy path uses HF's key)
+   - `MEDVERSE_AI_BASE_URL` — `https://nivakaran-medverse.hf.space` (or your own HF Space URL). Tells Render's `/api/agent/*` endpoints to forward to HF instead of importing LangGraph locally.
    - `MEDVERSE_JWT_SECRET` — only needed when `MEDVERSE_AUTH_ENABLED=true` (off by default).
-4. **First deploy** runs `alembic upgrade head` automatically (in the Dockerfile `CMD`) — schema lands on Postgres before the API starts answering.
+   - `MEDVERSE_DB_URL` — leave unset for SQLite fallback. Set to a Postgres URL (Neon free tier, Supabase, or Render `basic_256mb` $6/mo) if you need persistence across redeploys.
+   - `MEDVERSE_CORS_ORIGINS` — only needed if you serve a Next.js frontend from a different origin. Mobile clients don't need CORS.
+4. **First deploy** runs the Docker build (~3-4 min on slim requirements) then `alembic` exits 0 (SQLite mode) → uvicorn starts on `$PORT`.
+5. Smoke-test:
+   ```bash
+   curl https://<your-service>.onrender.com/health/diagnostics
+   ```
+   Expect `groq_client.ok: true`, `flags.MEDVERSE_DISABLE_BLE: true`, all `secrets_present.*` matching what you set.
+
+### One-time setup — Hugging Face Spaces (AI plane)
+
+1. **Create the Space** at <https://huggingface.co/new-space>:
+   - SDK: **Docker** (critical — not Streamlit/Gradio)
+   - Hardware: **CPU basic** (free, 16 GB RAM)
+   - Visibility: Public (private requires HF Pro)
+2. **Generate a write token** at <https://huggingface.co/settings/tokens> with **Type: Write**.
+3. **Push the AI service code** to the Space's git remote:
+   ```bash
+   git clone https://<username>:<token>@huggingface.co/spaces/<username>/<space-name> /tmp/hfspace
+   cp -r services/medverse-ai/. /tmp/hfspace/
+   cd /tmp/hfspace
+   git add . && git commit -m "Initial deploy" && git push
+   rm -rf /tmp/hfspace   # clears the embedded token from local git config
+   ```
+4. **Add the Groq secret** at the Space's Settings → Variables and secrets → New secret:
+   - `GROQ_API_KEY` = your Groq key
+5. **Restart the Space** so it picks up the new secret (Settings → Restart / Factory reboot).
+6. Smoke-test:
+   ```bash
+   curl https://<username>-<space-name>.hf.space/health/diagnostics
+   curl -X POST https://<username>-<space-name>.hf.space/api/agent/ask \
+     -H "Content-Type: application/json" \
+     -d '{"specialty":"cardiology","message":"Quick assessment","snapshot":{"vitals":{"heart_rate":72,"spo2":98}}}'
+   ```
 
 ### Architecture flags (already set in `render.yaml`)
 
 | Env var | Value | Why |
 |---|---|---|
-| `MEDVERSE_DISABLE_BLE` | `true` | No Bluetooth radio in the cloud — mobile pushes snapshots instead. |
-| `MEDVERSE_DISABLE_AGENT_LOOP` | `true` | The 60-s background agent loop burns Groq tokens with no user driving it. Flip off if you want continuous alerting. |
-| `CHROMA_PERSIST_DIR` | `/var/medverse/chroma` | RAG history collections written to the persistent disk so they survive redeploys. |
-| `MEDVERSE_UPLOADS_DIR` | `/var/medverse/uploads` | Lab / skin / retinal image uploads write here so subsequent snapshot `imaging.{retinal,skin}.image_path` references stay valid. |
-| `MEDVERSE_MODELS_DIR` | `/var/medverse/models` | Where runtime adapters (`fetal_health/model.pkl`, `parkinson_screener/model.pkl`, etc.) look for trained weights. Train + export pipelines locally; copy the per-domain pickle files into this disk via Render's SSH-shell or a one-shot upload route. |
-| `MEDVERSE_SQLITE_PATH` | `/var/medverse/medverse.db` | SQLite fallback path when `MEDVERSE_DB_URL` is unset. |
+| `MEDVERSE_DISABLE_BLE` | `true` | No Bluetooth radio in the cloud — mobile pushes snapshots instead. Without this, boot wastes ~10 s scanning for adapters that don't exist. |
+| `MEDVERSE_DISABLE_AGENT_LOOP` | `true` | The 60-s background agent loop burns Groq tokens with no user driving it. Mandatory off on free tier so the service sleeps cleanly. |
+| `MEDVERSE_AUTH_ENABLED` | `false` | JWT auth off by default — flip on + set `MEDVERSE_JWT_SECRET` when the frontend ships login. |
+| `MEDVERSE_AI_BASE_URL` | `<HF Space URL>` | Forwards `/api/agent/*` calls to the HF Spaces AI service via httpx. Without this, agent endpoints try to import LangGraph locally and OOM the 512 MB worker. |
 
-### Pointing the mobile app at Render
+### Pointing the mobile app at the deploys
 
-In the app: **Settings → Backend connection** → enter `https://your-service.onrender.com`. The `BackendSettingsScreen` writes the override to `flutter_secure_storage` so it survives restarts. Tap **Test connection** — the SnackBar reports the row count from `/api/history`. From that point every API call (`/api/agent/ask`, `/api/snapshot/ingest`, `/api/digital-twin/scenario`, etc.) lands on Render.
+The shipped APK already defaults to both URLs (baked into [`api_config.dart`](mobile/aegis/lib/services/api_config.dart)):
+- `_renderBaseUrl = 'https://medverse-api.onrender.com'` — used for snapshot/history/patients/images
+- `_hfSpacesAiUrl = 'https://nivakaran-medverse.hf.space'` — used for `/api/agent/*`
 
-### Costs (May 2026 pricing)
+Override either at runtime via **Settings → Backend connection**:
+- "Override URL" — points the data-plane calls at a different Render service (e.g. your fork)
+- "Override AI URL" — points the agent calls at a different HF Space
 
-- **Web service** — Standard $25/mo (2 GB RAM, no cold starts). Drop to Starter $7/mo (1 GB) only if you also disable Chroma RAG; Free tier sleeps after 15 min of idle which kills SSE.
-- **Postgres** — Free for 90 days, then Starter $7/mo. Or BYO (Neon free tier, Supabase, Timescale Cloud).
-- **Persistent disk** — $0.25/GB/mo. 1 GB ($0.25/mo) is plenty for Chroma + uploaded images.
-- **Total** — ~$32/mo on Render-managed, or ~$25/mo with BYO Postgres on Neon's free tier.
+Both overrides persist to `flutter_secure_storage` and survive restarts ([`backend_settings_screen.dart`](mobile/aegis/lib/screens/settings/backend_settings_screen.dart)).
 
-### Memory headroom
+For local dev: `flutter run --dart-define=USE_LOCAL_BACKEND=true` swings everything back to `localhost:8000` (or `10.0.2.2:8000` on Android emulator). Or per-URL: `--dart-define=BACKEND_URL=http://192.168.1.42:8000` and `--dart-define=AI_URL=http://192.168.1.42:8001`.
 
-Resident footprint at idle is ~1.3 GB:
-- FastAPI + asyncio + uvicorn: ~150 MB
-- LangGraph + Groq client + httpx: ~200 MB
-- Chroma + biolord-2023 embedding model: ~600 MB at first index, ~300 MB resident
-- pandas / numpy / scipy import overhead: ~250 MB
-- Active sklearn ML adapters (fetal_health + parkinson_screener): ~50 MB each
+### Memory footprint at runtime
 
-Standard plan's 2 GB gives ~700 MB peak headroom — comfortable for one or two concurrent agent calls. If you turn on every ML adapter (>9 active), bump to Pro ($85/mo, 4 GB).
+Render container at idle (~250 MB image, ~180 MB resident):
+- FastAPI + uvicorn + asyncio: ~120 MB
+- numpy + scipy + pandas: ~50 MB
+- DSP feature builders + FHIR resources: ~10 MB
+
+HF Space container at idle (~1.5 GB image, ~600 MB resident):
+- LangGraph + langchain + langchain-groq: ~250 MB
+- Chroma + sentence-transformers (BioLORD-2023): ~300 MB after first index
+- numpy + pydantic + FastAPI: ~50 MB
+
+Both have huge headroom on their respective free tiers. The 16 GB on HF means you can also run [`complex_diagnosis_graph`](services/medverse-ai/src/graphs/complex_diagnosis_graph.py) (proposer → background → skeptic → diagnoser → narrator — four sequential LLM calls) without memory concern.
+
+### Upgrade paths
+
+When the free tier becomes the bottleneck:
+
+| Constraint | Fix |
+|---|---|
+| Render sleeps after 15 min idle | Render Starter ($7/mo) — always-on, still 512 MB |
+| SQLite wiped on Render redeploy | Add a Postgres URL to `MEDVERSE_DB_URL`. Cheapest: Neon free tier (3 GB, no expiry) or Render `basic_256mb` ($6/mo). Alembic migrations run automatically on first connect. |
+| HF Space sleeps after 48 hrs | HF Pro ($9/mo, no sleep) or self-hosted on a small VPS |
+| Need image uploads to persist | Render Starter + 1 GB persistent disk ($0.25/mo) — update `MEDVERSE_UPLOADS_DIR` to point at the mount |
+| One agent call at a time slows other requests | Render Standard ($25/mo, 2 GB) lets you flip `MEDVERSE_AI_BASE_URL` off and run LangGraph locally on Render too — eliminates the proxy hop |
 
 ## License
 
