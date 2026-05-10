@@ -253,6 +253,20 @@ def _make_interpretation_generation(specialty: str):
         shared = state.get("shared_context") or {}
         telemetry = state.get("sensor_telemetry") or {}
 
+        # Pull the user's actual question out of state["messages"] so it
+        # reaches the LLM. Without this the chat is just a generic
+        # assessment regardless of what was typed.
+        user_message = ""
+        msgs = state.get("messages") or []
+        if msgs:
+            last = msgs[-1]
+            user_message = (
+                last.get("content")
+                if isinstance(last, dict)
+                else getattr(last, "content", "")
+            )
+        user_message = (user_message or "").strip()
+
         # Format tool results for the prompt
         tool_results_str = "\n".join(
             [f"### {name}\n```json\n{result}\n```" for name, result in tool_results.items()]
@@ -261,23 +275,32 @@ def _make_interpretation_generation(specialty: str):
         # Get patient ID for history lookup (from shared context or default)
         patient_id = shared.get("patient_id", "default_patient")
 
-        # Retrieve past session history from vector store
+        # Retrieve past session history from vector store. RAG against the
+        # user's question when present so the most relevant prior
+        # interpretations come back first.
+        rag_query = user_message or f"{domain} assessment current session"
         history = get_history(
             specialty=specialty,
             patient_id=patient_id,
-            query=f"{domain} assessment current session",
+            query=rag_query,
             k=5,
         )
 
-        # Build the patient profile string
-        patient_profile = shared.get("patient_base", "")
+        # Build the patient profile string. Accept either patient_profile
+        # (current) or patient_base (legacy field name).
+        patient_profile = (
+            shared.get("patient_profile")
+            or shared.get("patient_base")
+            or ""
+        )
         if isinstance(patient_profile, dict):
             patient_profile = json.dumps(patient_profile, indent=2)
 
-        # Telemetry context
+        # Telemetry context — prefer the snapshot the client attached
+        # (mobile sends real vest readings) over the mock tool defaults.
         telemetry_str = json.dumps(telemetry, indent=2) if telemetry else ""
 
-        # Assemble the full system prompt
+        # Assemble the base expert system prompt (telemetry, tools, KB, history).
         system_prompt = get_expert_prompt(
             specialty=specialty,
             tool_results=tool_results_str,
@@ -285,6 +308,21 @@ def _make_interpretation_generation(specialty: str):
             patient_profile=str(patient_profile),
             telemetry_context=telemetry_str,
         )
+
+        # Append the user's question. Frame the JSON 'finding' field as
+        # a direct, conversational answer rather than a generic write-up.
+        if user_message:
+            system_prompt += f"""
+
+## USER QUESTION
+The patient (or clinician) has asked the following. Answer it directly,
+grounding every claim in the live telemetry, tool results, patient
+profile, and clinical reference knowledge above. The 'finding' field
+of your JSON output must be a substantive answer to THIS specific
+question — not a generic assessment.
+
+QUESTION: {user_message}
+"""
 
         # Call the LLM
         try:
