@@ -1460,14 +1460,35 @@ each is a meaningful project on its own and would distract from the
   enforcement in [`app.py`](app.py) is the hook point — extend it to
   read `user["allowed_patients"]` from a real DB lookup instead of the
   current "matches `sub`" check.
-- **Training the remaining 10 ML adapters.** Two pickles ship in
-  [`services/medverse-ai/models/`](services/medverse-ai/models/) (fetal
-  health + Parkinson screener, ~4 MB total). The other ten adapters in
-  [`src/ml/`](src/ml/) load weight files that don't exist yet. Each has
-  a `models/<pipeline>/export_runtime.py` that produces the runtime
-  pickle once the training pipeline finishes — most need Kaggle / HF
-  dataset access. ECGFounder + the respiratory CNN are scaffolds only;
-  they need PyTorch weights authored from scratch.
+- **Replace the 7 synthetic-baseline ML pickles with real-trained ones.**
+  Nine pickles now ship in [`services/medverse-ai/models/`](services/medverse-ai/models/):
+  two were trained on the actual upstream datasets (`fetal_health` from
+  UCI CTG, `parkinson_screener` from UCI Parkinsons voice — both small,
+  no-auth public datasets); the other seven (`ecg_arrhythmia`,
+  `cardiac_age`, `lung_sound`, `preterm_labour`, `skin_disease`,
+  `retinal_disease`, `retinal_age`) are **synthetic baselines** —
+  trained on `numpy.random` data with weak rule-based labels by
+  [`scripts/train_synthetic_baselines.py`](scripts/train_synthetic_baselines.py).
+  Each has a giant ⚠ DEMO ONLY warning in its `MODEL_CARD.md`. To
+  replace with real weights:
+  1. Implement the `NotImplementedError` stubs in `models/<pipeline>/src/components/`
+     (`data_ingestion`, `data_validation`, `data_transformation`, `model_trainer`)
+  2. Download the dataset (PTB-XL 25 GB, HAM10000 1 GB, ODIR-5K 3.5 GB,
+     ICBHI 600 MB, TPEHGDB 500 MB — see each pipeline's README for
+     credentials)
+  3. Run `python -m src.pipeline.training_pipeline`
+  4. Run `python models/<pipeline>/export_runtime.py` to extract the
+     runtime pickle
+  5. Drop into `services/medverse-ai/models/<specialty>/<pipeline>/model.pkl`
+  6. Push via `./scripts/deploy-hf.sh`
+- **Wire the two PyTorch adapters.** [`ecgfounder_adapter`](services/medverse-ai/src/ml/ecgfounder_adapter.py)
+  + [`pulmonary_classifier`](services/medverse-ai/src/ml/pulmonary_classifier.py)
+  are scaffolds with `_load_weights()` raising `NotImplementedError`. To
+  wire: identify a HuggingFace pre-trained model (ECGFounder weights
+  are published; ICBHI CNNs have several open-weight options on HF),
+  override `_load_weights()` with `torch.load(self.weights_path,
+  map_location='cpu')`, drop the `.pt` file at the path the adapter
+  expects, redeploy.
 - **Streaming chat responses.** Groq supports streaming tokens and
   LangGraph passes them through; the current agent endpoint waits for
   the full response before returning. Mobile would need an SSE or
