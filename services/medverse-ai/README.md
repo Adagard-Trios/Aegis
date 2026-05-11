@@ -90,8 +90,8 @@ adapters whose specialty matches and adds their predictions to
 | `skin_disease` | Dermatology | `patient.age` + `imaging.skin.image_path` | ⚠ Synthetic baseline — fires after the user calls `ApiService.uploadImage(modality: "skin", ...)` once. The path is cached in `LatestImageService` and attached to every subsequent agent call. |
 | `retinal_disease` | Ocular | `patient.age` + `patient.sex` + `imaging.retinal.image_path` | ⚠ Synthetic baseline — same flow as skin_disease, modality `"retinal"` |
 | `retinal_age` | Ocular | `patient.sex` (+ chronological age for delta) | ⚠ Synthetic baseline |
-| `ecgfounder` | Cardiology | `waveform.ecg_lead2` + `fs` | ❌ PyTorch scaffold — `_load_weights()` raises `NotImplementedError`. Drop a `.pt` at `models/ecg/ecgfounder/weights.pt` (e.g. from a HF-published ECGFounder mirror) and override the load method. |
-| `pulmonary_classifier` | Pulmonary | `waveform.audio` + `fs` | ❌ PyTorch scaffold — same situation. Drop weights at `models/pulmonary/icbhi_cnn/weights.pt` |
+| `ecgfounder` | Cardiology | `waveform.ecg_lead2` + `fs` | ⚠ Synthetic baseline (was a PyTorch scaffold; rewritten as sklearn so it fires without torch in the image). Extracts HR / HRV-proxy / signal envelope / peak-interval CV from the raw ECG buffer; classifies into 8 common findings (Sinus, AFib, PAC, PVC, ST_elev, ST_dep, BBB, Other). To swap in real ECGFounder weights: override `classify()` with a torch path + drop a `.pt` at `models/ecg/ecgfounder/weights.pt`. |
+| `pulmonary_classifier` | Pulmonary | `waveform.audio` + `fs` | ⚠ Synthetic baseline (was a PyTorch scaffold; rewritten as sklearn). Extracts duration / RMS / ZCR / p95-p05 envelope from the raw audio buffer; classifies into 4 ICBHI categories (normal, wheeze, crackle, stridor). To swap in a real ICBHI CNN: override `predict()` with a torch + mel-spectrogram path. |
 
 Synthetic baselines are produced by `scripts/train_synthetic_baselines.py` in
 the repo root. Each model dir has a `MODEL_CARD.md` explaining the

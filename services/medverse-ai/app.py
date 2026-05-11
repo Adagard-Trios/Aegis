@@ -325,20 +325,21 @@ async def health_diagnostics():
         except Exception as e:
             adapters[name] = {"is_loaded": False, "error": str(e)[:160]}
 
-    # Probe every sklearn adapter that ships a pickle. The two PyTorch
-    # adapters (ecgfounder, pulmonary_classifier) are intentionally
-    # skipped here — they lazy-import torch which would slow down the
-    # diagnostics endpoint by several seconds.
+    # Probe every adapter — all 11 are now sklearn-pickle based
+    # (ecgfounder + pulmonary_classifier were rewritten off the
+    # PyTorch scaffold so they fire without torch in the image).
     _adapter_probes = [
-        ("fetal_health",       "fetal_health_adapter",       "get_fetal_health"),
-        ("parkinson_screener", "parkinson_screener_adapter", "get_parkinson_screener"),
-        ("ecg_arrhythmia",     "ecg_arrhythmia_adapter",     "get_ecg_arrhythmia"),
-        ("cardiac_age",        "cardiac_age_adapter",        "get_cardiac_age"),
-        ("lung_sound",         "lung_sound_adapter",         "get_lung_sound"),
-        ("preterm_labour",     "preterm_labour_adapter",     "get_preterm_labour"),
-        ("skin_disease",       "skin_disease_adapter",       "get_skin_disease"),
-        ("retinal_disease",    "retinal_disease_adapter",    "get_retinal_disease"),
-        ("retinal_age",        "retinal_age_adapter",        "get_retinal_age"),
+        ("fetal_health",         "fetal_health_adapter",       "get_fetal_health"),
+        ("parkinson_screener",   "parkinson_screener_adapter", "get_parkinson_screener"),
+        ("ecg_arrhythmia",       "ecg_arrhythmia_adapter",     "get_ecg_arrhythmia"),
+        ("cardiac_age",          "cardiac_age_adapter",        "get_cardiac_age"),
+        ("ecgfounder",           "ecgfounder_adapter",         "get_ecgfounder"),
+        ("lung_sound",           "lung_sound_adapter",         "get_lung_sound"),
+        ("pulmonary_classifier", "pulmonary_classifier",       "get_pulmonary_classifier"),
+        ("preterm_labour",       "preterm_labour_adapter",     "get_preterm_labour"),
+        ("skin_disease",         "skin_disease_adapter",       "get_skin_disease"),
+        ("retinal_disease",      "retinal_disease_adapter",    "get_retinal_disease"),
+        ("retinal_age",          "retinal_age_adapter",        "get_retinal_age"),
     ]
     for name, mod_name, fn_name in _adapter_probes:
         try:

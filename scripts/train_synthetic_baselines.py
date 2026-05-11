@@ -299,6 +299,59 @@ def _gen_retinal_age(n: int = 500) -> Tuple[pd.DataFrame, np.ndarray]:
     return df, bio_age.values
 
 
+def _gen_pulmonary_classifier(n: int = 600) -> Tuple[pd.DataFrame, np.ndarray]:
+    """Same feature shape as _extract_features in pulmonary_classifier.py."""
+    df = pd.DataFrame({
+        "duration_s": RNG.uniform(2.0, 8.0, size=n),
+        "rms": RNG.uniform(0.005, 0.4, size=n),
+        "zcr": RNG.uniform(0.05, 0.6, size=n),
+        "p95": RNG.uniform(0.1, 0.9, size=n),
+        "p05": RNG.uniform(-0.9, -0.1, size=n),
+    })
+    classes = ["normal", "wheeze", "crackle", "stridor"]
+    labels = []
+    for _, row in df.iterrows():
+        if row["rms"] < 0.05 and row["zcr"] < 0.2:
+            labels.append("normal")
+        elif row["zcr"] > 0.45:
+            labels.append(RNG.choice(["wheeze", "stridor"], p=[0.7, 0.3]))
+        elif row["p95"] - row["p05"] > 1.4:
+            labels.append("crackle")
+        else:
+            labels.append(RNG.choice(classes, p=[0.45, 0.25, 0.20, 0.10]))
+    return df, np.array(labels)
+
+
+def _gen_ecgfounder(n: int = 700) -> Tuple[pd.DataFrame, np.ndarray]:
+    """Same feature shape as _extract_features in ecgfounder_adapter.py."""
+    df = pd.DataFrame({
+        "duration_s": RNG.uniform(5.0, 30.0, size=n),
+        "hr_estimate": RNG.normal(75, 22, size=n).clip(35, 200),
+        "hrv_proxy": RNG.uniform(5, 200, size=n),
+        "signal_rms": RNG.uniform(0.05, 0.8, size=n),
+        "p95_p05_range": RNG.uniform(0.2, 3.0, size=n),
+        "peak_interval_cv": RNG.uniform(0.0, 0.5, size=n),
+    })
+    labels = []
+    for _, row in df.iterrows():
+        if row["hr_estimate"] > 130 and row["peak_interval_cv"] > 0.15:
+            labels.append("Atrial Fibrillation")
+        elif row["hr_estimate"] < 50:
+            labels.append("Bundle Branch Block")
+        elif row["peak_interval_cv"] > 0.20:
+            labels.append(RNG.choice(["Premature Atrial Contraction",
+                                      "Premature Ventricular Contraction"], p=[0.55, 0.45]))
+        elif row["p95_p05_range"] > 2.2:
+            labels.append(RNG.choice(["ST Elevation", "ST Depression"], p=[0.55, 0.45]))
+        elif 60 <= row["hr_estimate"] <= 100 and row["hrv_proxy"] > 25:
+            labels.append("Sinus Rhythm" if RNG.random() < 0.85 else "Other")
+        else:
+            labels.append(RNG.choice(
+                ["Sinus Rhythm", "Other", "Premature Atrial Contraction"],
+                p=[0.6, 0.3, 0.1]))
+    return df, np.array(labels)
+
+
 # ─── Driver ──────────────────────────────────────────────────────────
 
 
@@ -393,6 +446,24 @@ def main():
         adapter_module="retinal_age_adapter",
         gen=_gen_retinal_age, is_classifier=False, n_samples=500,
         labels_text="Float — biological retinal age in years (20–95)",
+    )
+    _train_one(
+        "Pulmonary CNN replacement (sklearn)",
+        pipeline_dir="lung_sound",   # shares pipeline with lung_sound
+        out_subpath="pulmonary/icbhi_cnn/model.pkl",
+        adapter_module="pulmonary_classifier",
+        gen=_gen_pulmonary_classifier, is_classifier=True, n_samples=600,
+        labels_text="One of: normal, wheeze, crackle, stridor",
+    )
+    _train_one(
+        "ECGFounder replacement (sklearn)",
+        pipeline_dir="ecg_arrhythmia",   # shares pipeline conceptually
+        out_subpath="ecg/ecgfounder/model.pkl",
+        adapter_module="ecgfounder_adapter",
+        gen=_gen_ecgfounder, is_classifier=True, n_samples=700,
+        labels_text="One of: Sinus Rhythm, Atrial Fibrillation, Premature Atrial Contraction, "
+                    "Premature Ventricular Contraction, ST Elevation, ST Depression, "
+                    "Bundle Branch Block, Other",
     )
 
     print("\nDone. Smoke-test with:")
