@@ -16,6 +16,7 @@ import 'services/sync_queue_service.dart';
 import 'services/snapshot_uploader.dart';
 import 'services/ai_assessment_repository.dart';
 import 'services/api_service.dart';
+import 'services/latest_image_service.dart';
 import 'services/patient_profile_service.dart';
 import 'ble/ble_connection_supervisor.dart';
 
@@ -43,6 +44,12 @@ void main() async {
   // without an async secure-storage read on the hot path.
   final patientProfile = PatientProfileService();
   await patientProfile.load();
+
+  // Latest skin / retinal image upload paths — populated when the user
+  // calls ApiService.uploadImage. Surfaced into agent request bodies
+  // so the dermatology / ocular adapters get an image_path to read.
+  final latestImages = LatestImageService();
+  await latestImages.load();
 
   final vestDataModel = VestDataModel();
   // Phase 4 IoMT services — wired into the stream service so each
@@ -88,6 +95,7 @@ void main() async {
     stream: vestStreamService,
     auth: auth,
     profile: patientProfile,
+    images: latestImages,
   );
 
   runApp(
@@ -95,6 +103,7 @@ void main() async {
       providers: [
         ChangeNotifierProvider.value(value: auth),
         ChangeNotifierProvider.value(value: patientProfile),
+        ChangeNotifierProvider.value(value: latestImages),
         ChangeNotifierProvider.value(value: vestDataModel),
         Provider.value(value: vestStreamService),
         Provider.value(value: snapshotUploader),

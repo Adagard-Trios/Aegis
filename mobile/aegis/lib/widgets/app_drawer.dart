@@ -11,6 +11,7 @@ import '../ble/ble_vest_service.dart';
 import '../services/api_config.dart';
 import '../services/api_service.dart';
 import '../services/auth_service.dart';
+import '../services/latest_image_service.dart';
 import '../services/patient_profile_service.dart';
 import '../services/vest_stream_service.dart';
 
@@ -299,11 +300,25 @@ class _ComplexDiagnosisTileState extends State<_ComplexDiagnosisTile> {
     final stream = context.read<VestStreamService>();
     final auth = context.read<AuthService>();
     final profile = context.read<PatientProfileService>();
+    final imageCache = context.read<LatestImageService>();
     try {
+      // Merge demographics + image attachments into one patient_profile
+      // payload — AI service splits them into snapshot.patient +
+      // snapshot.imaging before fanning out to the specialty subgraphs.
+      Map<String, dynamic>? mergedProfile;
+      final base = profile.agentPayload;
+      final imgs = imageCache.agentPayload;
+      if (base != null || imgs != null) {
+        mergedProfile = {...?base};
+        if (imgs != null && imgs.isNotEmpty) {
+          mergedProfile['imaging'] = imgs;
+        }
+      }
+
       final result = await ApiService.complexDiagnosis(
         patientId: profile.patientId,
         snapshot: stream.latestSnapshot,
-        patientProfile: profile.agentPayload,
+        patientProfile: mergedProfile,
         auth: auth,
       );
       if (!mounted) return;

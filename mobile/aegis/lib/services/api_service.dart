@@ -80,6 +80,38 @@ class ApiService {
     }
   }
 
+  /// POST /api/upload-image — clinical image upload (skin / retinal).
+  /// Returns `{status, image_path, ...}` on success. Caller should pipe
+  /// the returned `image_path` into [LatestImageService.setLatest] so
+  /// subsequent agent calls include it under
+  /// `patient_profile.imaging.<modality>` for the dermatology / ocular
+  /// adapters to read.
+  static Future<Map<String, dynamic>?> uploadImage({
+    required String filePath,
+    required String modality,           // "skin" | "retinal"
+    String? patientId,
+    AuthService? auth,
+  }) async {
+    try {
+      final uri = Uri.parse('$baseUrl/api/upload-image').replace(queryParameters: {
+        'modality': modality,
+        'patient_id': ?patientId,
+      });
+      var request = http.MultipartRequest('POST', uri);
+      if (auth != null) request.headers.addAll(auth.authHeaders());
+      request.files.add(await http.MultipartFile.fromPath('file', filePath));
+      var response = await request.send().timeout(const Duration(seconds: 60));
+      if (response.statusCode == 200) {
+        var respString = await response.stream.bytesToString();
+        return jsonDecode(respString) as Map<String, dynamic>;
+      }
+      return null;
+    } catch (e) {
+      debugPrint('uploadImage error: $e');
+      return null;
+    }
+  }
+
   static Future<Map<String, dynamic>?> uploadLabResults(String filePath, {AuthService? auth}) async {
     try {
       var request = http.MultipartRequest('POST', Uri.parse('$baseUrl/api/upload-lab-results'));

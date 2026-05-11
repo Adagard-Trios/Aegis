@@ -403,6 +403,78 @@ def _splice_demographics_into_snapshot(
     return snapshot
 
 
+def _splice_ctg_analysis(snapshot: Dict[str, Any]) -> Dict[str, Any]:
+    """When the snapshot carries a raw FHR sample buffer (the abdomen
+    monitor's CTG stream), run a stateless Dawes-Redman-lite analysis
+    and splice the result into `snapshot['fetal']['dawes_redman']`. The
+    fetal_health adapter reads from there + the trained UCI CTG
+    preprocessor median-imputes anything the simple analyzer can't
+    compute. No-ops cleanly when FHR data is absent."""
+    fhr_raw = snapshot.get("fhr_raw") or (snapshot.get("fetal") or {}).get("fhr_raw")
+    if not fhr_raw:
+        return snapshot
+    fetal_block = dict(snapshot.get("fetal") or {})
+    # If the client already populated dawes_redman, trust it.
+    if fetal_block.get("dawes_redman"):
+        return snapshot
+    try:
+        from src.utils.ctg_lite import analyze as _ctg_analyze
+        fetal_block["dawes_redman"] = _ctg_analyze(fhr_raw)
+    except Exception as e:
+        logger.warning(f"CTG analyze failed: {e}")
+        return snapshot
+    snapshot = dict(snapshot)
+    snapshot["fetal"] = fetal_block
+    return snapshot
+
+
+def _splice_imaging(
+    snapshot: Dict[str, Any],
+    patient_profile: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Mirror the latest uploaded skin/retinal `image_path` (when
+    mobile attached them in the agent request body's
+    `patient_profile.imaging` or as top-level keys) into the
+    snapshot's `imaging` block. The skin_disease / retinal_disease /
+    retinal_age adapters read from there.
+
+    Mobile is the source-of-truth for the latest uploaded image
+    paths — when the user uploads via `/api/upload-image` it caches
+    the returned path in `LatestImageService` and attaches it to
+    every subsequent agent call's `patient_profile.imaging`."""
+    if not patient_profile:
+        return snapshot
+    pp_imaging = patient_profile.get("imaging") if isinstance(patient_profile.get("imaging"), dict) else None
+    if not pp_imaging:
+        return snapshot
+    imaging = dict(snapshot.get("imaging") or {})
+    for modality in ("skin", "retinal"):
+        path = pp_imaging.get(modality)
+        if not path:
+            continue
+        existing = imaging.get(modality) or {}
+        if not existing.get("image_path"):
+            imaging[modality] = {**existing, "image_path": path}
+    if imaging:
+        snapshot = dict(snapshot)
+        snapshot["imaging"] = imaging
+    return snapshot
+
+
+def _enrich_snapshot(
+    snapshot: Dict[str, Any],
+    patient_profile: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Apply all three snapshot enrichments before the graph runs.
+    Order is independent — each is a pure functional splice that
+    no-ops when its source data isn't present."""
+    s = snapshot or {}
+    s = _splice_demographics_into_snapshot(s, patient_profile)
+    s = _splice_ctg_analysis(s)
+    s = _splice_imaging(s, patient_profile)
+    return s
+
+
 def _build_state(
     message: str,
     patient_id: str,
@@ -439,7 +511,7 @@ def _build_state(
     if patient_profile:
         shared["patient_profile"] = patient_profile
 
-    enriched_snapshot = _splice_demographics_into_snapshot(snapshot or {}, patient_profile)
+    enriched_snapshot = _enrich_snapshot(snapshot or {}, patient_profile)
 
     return {
         "messages": msgs,
@@ -554,10 +626,11 @@ async def api_agent_complex_diagnosis(req: ComplexDiagnosisRequest):
             "patient_id": pid,
         }
 
-    # Splice demographics so the planner_node's `vitals.*` checks +
-    # the per-specialty subgraph adapter calls can read patient.age /
-    # patient.sex / patient.gestational_age_weeks.
-    enriched_snapshot = _splice_demographics_into_snapshot(snapshot, req.patient_profile)
+    # Same enrichments _build_state applies for /api/agent/ask:
+    # demographics → snapshot.patient, FHR raw → snapshot.fetal.dawes_redman,
+    # image paths → snapshot.imaging. Each splice no-ops when its source
+    # isn't present, so the call is safe for telemetry-only flows.
+    enriched_snapshot = _enrich_snapshot(snapshot, req.patient_profile)
 
     initial_state = {
         "patient_id": pid,

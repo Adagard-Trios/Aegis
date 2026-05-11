@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 
 import 'api_service.dart';
 import 'auth_service.dart';
+import 'latest_image_service.dart';
 import 'patient_profile_service.dart';
 import 'vest_stream_service.dart';
 
@@ -23,6 +24,7 @@ class AiAssessmentRepository extends ChangeNotifier {
   final VestStreamService stream;
   final AuthService? auth;
   final PatientProfileService? profile;
+  final LatestImageService? images;
 
   static const Duration _minRefetchInterval = Duration(seconds: 30);
   static const double _hrChangeThreshold = 5.0;
@@ -32,7 +34,7 @@ class AiAssessmentRepository extends ChangeNotifier {
   /// the `specialty` field on /api/agent/ask).
   final Map<String, AiAssessmentEntry> _cache = {};
 
-  AiAssessmentRepository({required this.stream, this.auth, this.profile});
+  AiAssessmentRepository({required this.stream, this.auth, this.profile, this.images});
 
   AiAssessmentEntry? entry(String specialty) => _cache[specialty];
 
@@ -62,13 +64,26 @@ class AiAssessmentRepository extends ChangeNotifier {
     notifyListeners();
 
     try {
+      // Merge profile + image-attachment payloads into one
+      // patient_profile dict — the AI service splits them back out
+      // into snapshot.patient + snapshot.imaging.
+      Map<String, dynamic>? mergedProfile;
+      final base = profile?.agentPayload;
+      final imgs = images?.agentPayload;
+      if (base != null || imgs != null) {
+        mergedProfile = {...?base};
+        if (imgs != null && imgs.isNotEmpty) {
+          mergedProfile['imaging'] = imgs;
+        }
+      }
+
       final reply = await ApiService.agentAsk(
         specialty: specialty,
         message: 'Provide a concise current clinical assessment based on the '
             'latest telemetry. List key observations and any flags. Markdown OK.',
         snapshot: snapshot,
         patientId: profile?.patientId,
-        patientProfile: profile?.agentPayload,
+        patientProfile: mergedProfile,
         auth: auth,
       );
 

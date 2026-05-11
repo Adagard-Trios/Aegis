@@ -6,6 +6,7 @@ import 'package:provider/provider.dart';
 
 import '../services/api_service.dart';
 import '../services/auth_service.dart';
+import '../services/latest_image_service.dart';
 import '../services/patient_profile_service.dart';
 import '../services/vest_stream_service.dart';
 import '../widgets/chat/composer.dart';
@@ -146,6 +147,10 @@ class _ChatScreenState extends State<ChatScreen> {
       // Patient identity + clinical notes so the LLM can ground its
       // answer in who the patient actually is.
       final profile = context.read<PatientProfileService>();
+      // Latest skin / retinal upload paths — included in
+      // patient_profile.imaging so dermatology / ocular ML adapters
+      // see the most recent image.
+      final imageCache = context.read<LatestImageService>();
 
       // Compose the message — if an image is attached, mention it in
       // the prompt so the agent knows imaging is available.
@@ -158,12 +163,25 @@ class _ChatScreenState extends State<ChatScreen> {
       // semantically less important than the latest exchange.
       final history = _recentHistoryForApi(maxTurns: 6);
 
+      // Merge profile demographics + image attachments into one
+      // patient_profile dict — AI service splits them back out into
+      // snapshot.patient + snapshot.imaging server-side.
+      Map<String, dynamic>? mergedProfile;
+      final base = profile.agentPayload;
+      final imgs = imageCache.agentPayload;
+      if (base != null || imgs != null) {
+        mergedProfile = {...?base};
+        if (imgs != null && imgs.isNotEmpty) {
+          mergedProfile['imaging'] = imgs;
+        }
+      }
+
       final reply = await ApiService.agentAsk(
         specialty: _persona.id,
         message: composed.isEmpty ? 'Please review my current state.' : composed,
         snapshot: snapshot,
         patientId: profile.patientId,
-        patientProfile: profile.agentPayload,
+        patientProfile: mergedProfile,
         history: history,
         auth: auth,
       );
